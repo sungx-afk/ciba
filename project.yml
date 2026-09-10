@@ -1,0 +1,74 @@
+name: CibaEnglish
+options:
+  bundleIdPrefix: com.cibaenglish
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.0.0"
+    GENERATE_INFOPLIST_FILE: NO
+targets:
+  CibaEnglish:
+    type: application
+    platform: iOS
+    sources:
+      - path: CibaEnglish
+        excludes:
+          - Resources
+          - Storyboards
+          - Data
+          - Info.plist
+      - path: CibaEnglish/Resources/Assets.xcassets
+        buildPhase: resources
+      - path: CibaEnglish/Resources/html/privacy.html
+        buildPhase: resources
+      - path: CibaEnglish/Resources/html/terms.html
+        buildPhase: resources
+      - path: CibaEnglish/Storyboards/LaunchScreen.storyboard
+        buildPhase: resources
+      - path: CibaEnglish/Storyboards/Main.storyboard
+        buildPhase: resources
+      - path: CibaEnglish/Data/words.json
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cibaenglish.app
+        INFOPLIST_FILE: CibaEnglish/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGNING_ALLOWED: NO
+    scheme:
+      testTargets:
+        - CibaEnglishTests
+        - CibaEnglishUITests
+  CibaEnglishTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: CibaEnglishTests
+    dependencies:
+      - target: CibaEnglish
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cibaenglish.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+  CibaEnglishUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: CibaEnglishUITests
+    dependencies:
+      - target: CibaEnglish
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cibaenglish.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
