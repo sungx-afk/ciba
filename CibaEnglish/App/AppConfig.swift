@@ -2,6 +2,7 @@ import UIKit
 
 /// App-wide configuration and content constants.
 /// NOTE: replace the placeholders below with your own values before App Store release.
+///liushuang test
 enum AppConfig {
 
     static let appName = "糍粑英语"
