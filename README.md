@@ -1,4 +1,4 @@
-# 糍粑英语 · CibaEnglish
+# 糍粑英语 · CibaEnglish lenxeon
 
 按意群分类记忆 TOEFL 词汇的 iPhone 应用（UIKit + Storyboard，无 SwiftUI）。
 
