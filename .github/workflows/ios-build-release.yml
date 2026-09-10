@@ -6,10 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'CibaEnglish/**'
-      - 'project.yml'
+      - 'src/**'
+      - 'App.tsx'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/ios-build-release.yml'
-      - 'tools/**'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -28,26 +30,40 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
       - name: Select Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode_15.3.app || sudo xcode-select -s /Applications/Xcode_15.2.app || sudo xcode-select -s /Applications/Xcode.app || true
+          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode_15.3.app || sudo xcode-select -s /Applications/Xcode.app || true
           xcodebuild -version
 
-      - name: Install XcodeGen & Generate Project
+      - name: Install Project Dependencies
+        run: npm ci || npm install
+
+      - name: Prebuild iOS Project with Expo
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Install CocoaPods Dependencies
         run: |
-          brew install xcodegen || true
-          xcodegen generate
-          sed -i '' 's/objectVersion = [0-9]*/objectVersion = 60/' CibaEnglish.xcodeproj/project.pbxproj || true
+          cd ios
+          pod install --repo-update || pod install
 
       - name: Build & Archive iOS App
         run: |
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json | node -p "JSON.parse(require('fs').readFileSync(0)).workspace.schemes[0]" || echo "app")
+          echo "Building Workspace: $WORKSPACE, Scheme: $SCHEME"
           mkdir -p build
-          xcodebuild -project CibaEnglish.xcodeproj \
-            -scheme CibaEnglish \
+          xcodebuild -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            -archivePath build/CibaEnglish.xcarchive \
+            -archivePath build/App.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -56,12 +72,12 @@ jobs:
       - name: Package IPA
         run: |
           mkdir -p Payload
-          cp -r build/CibaEnglish.xcarchive/Products/Applications/CibaEnglish.app Payload/
+          cp -r build/App.xcarchive/Products/Applications/*.app Payload/
           zip -qr CibaEnglish-iOS.ipa Payload
           mkdir -p build-output
           cp CibaEnglish-iOS.ipa build-output/CibaEnglish-iOS-latest.ipa
 
-          VERSION=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' || echo "1.0.0")
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "1.0.0")
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             TAG_VER="${{ github.ref_name }}"
             VERSION="${TAG_VER#v}"

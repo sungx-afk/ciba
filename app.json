@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "糍粑英语",
+    "slug": "ciba-english",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./src/assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./src/assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FDFAF4"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cibaenglish.app"
+    },
+    "android": {
+      "package": "com.cibaenglish.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./src/assets/adaptive-icon.png",
+        "backgroundColor": "#FDFAF4"
+      }
+    },
+    "web": {
+      "favicon": "./src/assets/favicon.png",
+      "bundler": "metro"
+    }
+  }
+}

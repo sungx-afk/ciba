@@ -1,7 +1,14 @@
 node_modules/
+.expo/
 dist/
+web-build/
 build/
-.env
+.env*
 *.log
 __pycache__/
 .DS_Store
+*.orig.*
+.eas/
+/ios/
+/android/
+build-output/
