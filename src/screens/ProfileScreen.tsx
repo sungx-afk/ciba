@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -19,8 +19,19 @@ import { Header } from '../components/Header';
 
 export const ProfileScreen: React.FC = () => {
   const navigation = useNavigation<any>();
-  const { user, isLoggedIn, logout } = useAuth();
-  const { state, stats, updateSettings, resetProgress, exportProgressData } = useProgress();
+  const { user: authUser, isLoggedIn: isAuthLoggedIn, logout: authLogout } = useAuth();
+  const {
+    state,
+    stats,
+    updateSettings,
+    resetProgress,
+    exportProgressData,
+    currentPack,
+    wordSource,
+  } = useProgress();
+
+  const isLoggedIn = isAuthLoggedIn;
+  const user = authUser;
 
   const handleGoalChange = (newGoal: number) => {
     updateSettings({ dailyGoal: newGoal });
@@ -67,14 +78,16 @@ export const ProfileScreen: React.FC = () => {
       {
         text: '退出登录',
         style: 'destructive',
-        onPress: () => logout(),
+        onPress: async () => {
+          await authLogout();
+        },
       },
     ]);
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <Header title="我的 / 设置" />
+      <Header title="我的" />
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         {/* 用户概览卡片 */}
@@ -100,12 +113,27 @@ export const ProfileScreen: React.FC = () => {
             />
           </View>
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>
-              {isLoggedIn ? (user?.nickname || user?.mobile || user?.email || '糍粑学者') : '点击登录 / 注册'}
-            </Text>
+            <View style={styles.userNameRow}>
+              <Text style={styles.userName} numberOfLines={1}>
+                {isLoggedIn ? user?.nickname || user?.loginName || '糍粑学员' : '点击登录 / 注册'}
+              </Text>
+              <TouchableOpacity
+                style={styles.vipButton}
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  navigation.navigate('Purchase');
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
+                <Text style={styles.vipButtonText}>
+                  {user?.vip ? '尊享会员' : '升级会员'}
+                </Text>
+              </TouchableOpacity>
+            </View>
             <Text style={styles.userSub}>
               {isLoggedIn
-                ? (user?.vip ? '👑 鱼骨尊享会员' : '已登录 · 云端学习记录实时同步')
+                ? (wordSource === 'remote' ? `在线同步 · ${currentPack?.name || '词库已连接'}` : '已登录 · 本地词库已同步')
                 : '登录后开启跨设备词库同步与生词本云备份'}
             </Text>
           </View>
@@ -118,6 +146,24 @@ export const ProfileScreen: React.FC = () => {
               <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
             )}
           </View>
+        </TouchableOpacity>
+
+        {/* 词库切换 */}
+        <TouchableOpacity
+          style={[styles.sectionCard, styles.rowCard]}
+          onPress={() => navigation.navigate('BookSelect')}
+          activeOpacity={0.7}
+        >
+          <View style={styles.actionLeft}>
+            <Ionicons name="library-outline" size={20} color={Colors.primary} />
+            <View style={styles.packInfo}>
+              <Text style={styles.actionLabel}>切换词库</Text>
+              <Text style={styles.settingDesc} numberOfLines={1}>
+                当前: {currentPack ? currentPack.name : '本地词库 (TOEFL 意群)'}
+              </Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
         </TouchableOpacity>
 
         {/* 学习总览 */}
@@ -331,10 +377,31 @@ const styles = StyleSheet.create({
   userInfo: {
     flex: 1,
   },
+  userNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   userName: {
     fontSize: 18,
     fontWeight: '800',
     color: Colors.textPrimary,
+  },
+  vipButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: Colors.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  vipButtonText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: Colors.primary,
   },
   userSub: {
     fontSize: 12,
@@ -357,6 +424,23 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.primary,
   },
+  sectionCard: {
+    backgroundColor: Colors.card,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: 16,
+  },
+  rowCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+  },
+  packInfo: {
+    marginLeft: 12,
+  },
   statsCard: {
     backgroundColor: Colors.card,
     borderRadius: 16,
@@ -374,7 +458,7 @@ const styles = StyleSheet.create({
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   statBox: {
     flex: 1,
@@ -394,47 +478,37 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 4,
   },
-  sectionCard: {
-    backgroundColor: Colors.card,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 16,
-  },
   goalRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
   },
   goalChip: {
     flex: 1,
     paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: Colors.divider,
+    borderRadius: 12,
+    backgroundColor: Colors.background,
     alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
   },
   goalChipActive: {
-    backgroundColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+    borderColor: Colors.primary,
   },
   goalChipText: {
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
     color: Colors.textSecondary,
   },
   goalChipTextActive: {
-    color: '#FFFFFF',
+    color: Colors.primary,
+    fontWeight: '700',
   },
   settingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 8,
-  },
-  borderTop: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.divider,
-    marginTop: 8,
-    paddingTop: 12,
+    paddingVertical: 12,
   },
   settingLabel: {
     fontSize: 14,
@@ -442,15 +516,15 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
   },
   settingDesc: {
-    fontSize: 11,
+    fontSize: 12,
     color: Colors.textMuted,
     marginTop: 2,
   },
   accentToggle: {
     flexDirection: 'row',
-    backgroundColor: Colors.divider,
+    backgroundColor: Colors.background,
     borderRadius: 8,
-    padding: 3,
+    padding: 2,
   },
   accentOption: {
     paddingHorizontal: 12,
@@ -458,12 +532,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   accentOptionActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 1,
+    backgroundColor: Colors.card,
   },
   accentText: {
     fontSize: 12,
@@ -477,17 +546,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
   actionLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    flex: 1,
   },
   actionLabel: {
     fontSize: 14,
-    fontWeight: '600',
     color: Colors.textPrimary,
+    marginLeft: 12,
+  },
+  borderTop: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
   },
   aboutFooter: {
     alignItems: 'center',
@@ -495,7 +568,6 @@ const styles = StyleSheet.create({
   },
   aboutText: {
     fontSize: 12,
-    fontWeight: '600',
     color: Colors.textMuted,
   },
   aboutSub: {

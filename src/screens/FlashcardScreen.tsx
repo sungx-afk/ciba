@@ -9,7 +9,7 @@ import {
   StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { allWords, useProgress } from '../storage/progressStore';
+import { useProgress } from '../storage/progressStore';
 import { Word } from '../types';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { pronounceWord } from '../utils/speech';
@@ -23,18 +23,18 @@ interface FlashcardScreenProps {
 
 export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigation }) => {
   const { category, subCategory, singleWordId, onlyDue, filter } = route.params || {};
-  const { state, stats, recordReview, toggleBookmark } = useProgress();
+  const { state, stats, recordReview, toggleBookmark, words } = useProgress();
 
   // 构建当前复习/学习单词队列
   const studyQueue: Word[] = useMemo(() => {
     if (singleWordId) {
-      const single = allWords.find((w) => w.id === singleWordId);
+      const single = words.find((w) => w.id === singleWordId);
       return single ? [single] : [];
     }
 
     const now = Date.now();
 
-    return allWords.filter((w) => {
+    return words.filter((w) => {
       if (category && w.cat !== category) return false;
       if (subCategory && w.sub !== subCategory) return false;
 
@@ -56,7 +56,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
 
       return true;
     });
-  }, [category, subCategory, singleWordId, onlyDue, filter, state.progressMap]);
+  }, [category, subCategory, singleWordId, onlyDue, filter, state.progressMap, words]);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);

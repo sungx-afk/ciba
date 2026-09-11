@@ -10,7 +10,7 @@ import {
   Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useProgress, categoryList, allWords } from '../storage/progressStore';
+import { useProgress } from '../storage/progressStore';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { ProgressBar } from '../components/ProgressBar';
 
@@ -19,7 +19,7 @@ interface HomeScreenProps {
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
-  const { stats, state } = useProgress();
+  const { stats, state, words, categoryList, currentPack, isLoadingWords } = useProgress();
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
 
   // 计算某个大类的已掌握词数
@@ -28,7 +28,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     for (const id in state.progressMap) {
       const p = state.progressMap[id];
       if (p.status === 'mastered') {
-        const w = allWords.find(item => item.id === Number(id));
+        const w = words.find((item) => item.id === Number(id));
         if (w && w.cat === catName) {
           count++;
         }
@@ -61,7 +61,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           />
           <View>
             <Text style={styles.brandTitle}>糍粑英语</Text>
-            <Text style={styles.brandSubtitle}>TOEFL 意群词汇记忆</Text>
+            <TouchableOpacity onPress={() => navigation.navigate('BookSelect')} activeOpacity={0.6}>
+              <Text style={styles.brandSubtitle}>
+                {currentPack ? currentPack.name : 'TOEFL 意群词汇记忆'}
+                <Text style={styles.switchHint}> 切换 ›</Text>
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -71,6 +76,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           <Text style={styles.streakText}>{stats.streakDays} 天</Text>
         </View>
       </View>
+
+      {isLoadingWords ? (
+        <View style={styles.loadingBar}>
+          <Text style={styles.loadingBarText}>正在加载在线词库...</Text>
+        </View>
+      ) : null}
 
       <ScrollView
         style={styles.scrollView}
@@ -259,6 +270,21 @@ const styles = StyleSheet.create({
   brandSubtitle: {
     fontSize: 11,
     color: Colors.textSecondary,
+  },
+  switchHint: {
+    fontSize: 11,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
+  loadingBar: {
+    backgroundColor: Colors.primaryLight,
+    paddingVertical: 6,
+    alignItems: 'center',
+  },
+  loadingBarText: {
+    fontSize: 12,
+    color: Colors.primary,
+    fontWeight: '600',
   },
   streakBadge: {
     flexDirection: 'row',

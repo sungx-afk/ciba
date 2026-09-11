@@ -1,9 +1,9 @@
 import React from 'react';
-import { Platform } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../theme/colors';
 
 import { HomeScreen } from '../screens/HomeScreen';
@@ -11,6 +11,9 @@ import { BookmarksScreen } from '../screens/BookmarksScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { WordListScreen } from '../screens/WordListScreen';
 import { FlashcardScreen } from '../screens/FlashcardScreen';
+import { BookSelectScreen } from '../screens/BookSelectScreen';
+import { PurchaseScreen } from '../screens/PurchaseScreen';
+
 import { LoginScreen } from '../screens/auth/LoginScreen';
 import { RegisterScreen } from '../screens/auth/RegisterScreen';
 import { ForgotPasswordScreen } from '../screens/auth/ForgotPasswordScreen';
@@ -20,6 +23,9 @@ const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = 60 + insets.bottom;
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -30,12 +36,18 @@ function MainTabs() {
           backgroundColor: Colors.card,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 88 : 60,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 8,
-          paddingTop: 8,
+          height: tabBarHeight,
+          paddingBottom: insets.bottom,
+        },
+        tabBarItemStyle: {
+          justifyContent: 'center',
+        },
+        tabBarIconStyle: {
+          marginBottom: 2,
         },
         tabBarLabelStyle: {
           fontSize: 11,
+          lineHeight: 16,
           fontWeight: '600',
         },
         tabBarIcon: ({ focused, color, size }) => {
@@ -56,7 +68,7 @@ function MainTabs() {
       <Tab.Screen
         name="HomeTab"
         component={HomeScreen}
-        options={{ tabBarLabel: '意群分类' }}
+        options={{ tabBarLabel: '分类' }}
       />
       <Tab.Screen
         name="BookmarksTab"
@@ -66,7 +78,7 @@ function MainTabs() {
       <Tab.Screen
         name="ProfileTab"
         component={ProfileScreen}
-        options={{ tabBarLabel: '设置' }}
+        options={{ tabBarLabel: '我的' }}
       />
     </Tab.Navigator>
   );
@@ -87,9 +99,13 @@ export function RootNavigator() {
         <Stack.Screen
           name="Flashcard"
           component={FlashcardScreen}
-          options={{
-            animation: 'slide_from_bottom',
-          }}
+          options={{ animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen name="BookSelect" component={BookSelectScreen} />
+        <Stack.Screen
+          name="Purchase"
+          component={PurchaseScreen}
+          options={{ animation: 'slide_from_bottom' }}
         />
         <Stack.Screen
           name="Login"
@@ -106,4 +122,3 @@ export function RootNavigator() {
     </NavigationContainer>
   );
 }
-
