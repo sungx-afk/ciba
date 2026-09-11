@@ -130,9 +130,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
             <Ionicons name="library-outline" size={20} color={Colors.primary} />
             <View style={styles.packInfo}>
               <Text style={styles.actionLabel}>切换词库</Text>
-              <Text style={styles.settingDesc} numberOfLines={1}>
-                当前: {currentPack ? currentPack.name : '本地词库 (TOEFL 意群)'}
-              </Text>
+              {currentPack && (
+                <Text style={styles.settingDesc} numberOfLines={1}>
+                  当前: {currentPack.name}
+                </Text>
+              )}
             </View>
           </View>
           <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
@@ -259,7 +261,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         {/* 关于 */}
         <View style={styles.aboutFooter}>
           <Text style={styles.aboutText}>糍粑英语 · CibaEnglish v1.0.0</Text>
-          <Text style={styles.aboutSub}>无账号 · 无广告 · 纯粹的意群单词记忆工具</Text>
+          <Text style={styles.aboutSub}> 纯粹的分类单词记忆工具</Text>
         </View>
       </ScrollView>
 

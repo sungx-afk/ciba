@@ -8,7 +8,14 @@ import { packLibrary, RemotePack } from '../services/packLibrary';
 const STORAGE_KEY = '@ciba_progress_v1';
 const PACK_KEY = '@ciba_current_pack';
 
-const localWords: Word[] = (rawWordsData as { words: Word[] }).words;
+const localWords: Word[] =
+  Array.isArray((rawWordsData as any)?.words)
+    ? (rawWordsData as any).words
+    : Array.isArray((rawWordsData as any)?.default?.words)
+    ? (rawWordsData as any).default.words
+    : Array.isArray(rawWordsData)
+    ? (rawWordsData as any)
+    : [];
 
 export interface CategoryInfo {
   name: string;
@@ -18,8 +25,10 @@ export interface CategoryInfo {
 
 function buildCategories(words: Word[]): CategoryInfo[] {
   const map: Record<string, { total: number; subs: Record<string, number> }> = {};
+  const list = Array.isArray(words) ? words : [];
 
-  for (const w of words) {
+  for (const w of list) {
+    if (!w) continue;
     const cat = w.cat || '其他';
     const sub = w.sub || '通用';
     if (!map[cat]) {
@@ -144,9 +153,13 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // 初始化: 恢复登录态 + 恢复上次词库
   useEffect(() => {
     (async () => {
-      // 恢复登录
-      const restored = await authService.restore();
-      if (restored) setUser(restored);
+      try {
+        // 恢复登录
+        const restored = await authService.restore();
+        if (restored) setUser(restored);
+      } catch (e) {
+        console.warn('[ProgressStore] authService.restore failed', e);
+      }
 
       // 恢复上次选择的词库
       try {
@@ -164,15 +177,18 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 setWordSource('remote');
               }
             })
-            .catch((e) => console.warn('loadWordsFromPack failed', e))
+            .catch((e) => console.warn('[ProgressStore] loadWordsFromPack failed', e))
             .finally(() => setIsLoadingWords(false));
         }
-      } catch {
-        // ignore
+      } catch (e) {
+        console.warn('[ProgressStore] restore pack failed', e);
       }
 
       setIsLoaded(true);
-    })();
+    })().catch((e) => {
+      console.error('[ProgressStore] init useEffect failed', e);
+      setIsLoaded(true); // 即便出错也要解除 loading 状态
+    });
   }, []);
 
   // 加载本地进度
@@ -190,14 +206,15 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setState({
             ...defaultState,
             ...parsed,
-            todayLearnedIds: todayLearned,
+            progressMap: parsed.progressMap || {},
+            todayLearnedIds: Array.isArray(todayLearned) ? todayLearned : [],
           });
         }
       } catch (e) {
-        console.error('Failed to load progress', e);
+        console.error('[ProgressStore] Failed to load progress', e);
       }
     }
-    load();
+    load().catch((e) => console.error('[ProgressStore] load() unhandled rejection', e));
   }, []);
 
   // 持久化进度
@@ -480,8 +497,10 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     let dueTodayCount = 0;
     const now = Date.now();
 
-    for (const id in state.progressMap) {
-      const p = state.progressMap[id];
+    const progressMap = state?.progressMap || {};
+    for (const id in progressMap) {
+      const p = progressMap[id];
+      if (!p) continue;
       if (p.status === 'mastered') masteredCount++;
       else if (p.status === 'learning') learningCount++;
       if (p.nextReviewTime > 0 && p.nextReviewTime <= now) {
@@ -489,7 +508,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     }
 
-    const totalWords = words.length;
+    const totalWords = (words || []).length;
     const unlearnedCount = Math.max(0, totalWords - masteredCount - learningCount);
 
     return {
@@ -498,9 +517,9 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       learningCount,
       unlearnedCount,
       dueTodayCount,
-      todayLearnedCount: state.todayLearnedIds.length,
-      streakDays: state.streakDays,
-      dailyGoal: state.dailyGoal,
+      todayLearnedCount: (state?.todayLearnedIds || []).length,
+      streakDays: state?.streakDays || 0,
+      dailyGoal: state?.dailyGoal || 20,
     };
   }, [state, words]);
 

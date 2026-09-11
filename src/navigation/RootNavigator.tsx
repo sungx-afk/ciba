@@ -26,7 +26,8 @@ const Stack = createNativeStackNavigator();
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
-  const tabBarHeight = 60 + insets.bottom;
+  const bottomInset = Number(insets?.bottom) || 0;
+  const tabBarHeight = 60 + bottomInset;
 
   return (
     <Tab.Navigator
@@ -39,7 +40,7 @@ function MainTabs() {
           borderTopColor: Colors.border,
           borderTopWidth: 1,
           height: tabBarHeight,
-          paddingBottom: insets.bottom,
+          paddingBottom: bottomInset,
         },
         tabBarItemStyle: {
           justifyContent: 'center',
@@ -60,7 +61,7 @@ function MainTabs() {
           } else if (route.name === 'BookmarksTab') {
             iconName = focused ? 'bookmark' : 'bookmark-outline';
           } else if (route.name === 'ProfileTab') {
-            iconName = focused ? 'settings' : 'settings-outline';
+            iconName = focused ? 'person' : 'person-outline';
           }
 
           return <Ionicons name={iconName} size={size} color={color} />;
@@ -121,7 +122,7 @@ export function RootNavigator() {
         <Stack.Screen name="Register" component={RegisterScreen} />
         <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
         <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
-        
+
         <Stack.Screen  
           name="WebPage"
           component={WebPageScreen}
