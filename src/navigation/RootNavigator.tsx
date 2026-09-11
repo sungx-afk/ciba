@@ -14,6 +14,7 @@ import { FlashcardScreen } from '../screens/FlashcardScreen';
 import { LoginScreen } from '../screens/LoginScreen';
 import { BookSelectScreen } from '../screens/BookSelectScreen';
 import { PurchaseScreen } from '../screens/PurchaseScreen';
+import { WebPageScreen } from '../screens/WebPageScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -110,6 +111,11 @@ export function RootNavigator() {
           name="Purchase"
           component={PurchaseScreen}
           options={{ animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
+          name="WebPage"
+          component={WebPageScreen}
+          options={{ animation: 'slide_from_right' }}
         />
       </Stack.Navigator>
     </NavigationContainer>

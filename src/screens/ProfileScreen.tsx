@@ -223,7 +223,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         </View>
 
         {/* 数据与存储 */}
-        <View style={styles.sectionCard}>
+        {/* <View style={styles.sectionCard}>
           <Text style={styles.cardHeaderTitle}>数据与隐私</Text>
 
           <TouchableOpacity style={styles.actionRow} onPress={handleExport} activeOpacity={0.7}>
@@ -247,12 +247,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </TouchableOpacity>
-        </View>
+        </View> */}
 
         {/* 关于 */}
         <View style={styles.aboutFooter}>
           <Text style={styles.aboutText}>糍粑英语 · CibaEnglish v1.0.0</Text>
-          <Text style={styles.aboutSub}>无账号 · 无广告 · 纯粹的意群单词记忆工具</Text>
+          <Text style={styles.aboutSub}>无广告 · 纯粹的分类单词记忆工具</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
