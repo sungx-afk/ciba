@@ -11,11 +11,15 @@ import {
   Share,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
+import { useAuth } from '../context/AuthContext';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
 
 export const ProfileScreen: React.FC = () => {
+  const navigation = useNavigation<any>();
+  const { user, isLoggedIn, logout } = useAuth();
   const { state, stats, updateSettings, resetProgress, exportProgressData } = useProgress();
 
   const handleGoalChange = (newGoal: number) => {
@@ -57,21 +61,64 @@ export const ProfileScreen: React.FC = () => {
     );
   };
 
+  const handleLogout = () => {
+    Alert.alert('退出登录', '确定要退出当前账号吗？您的本地词库数据仍将保留。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '退出登录',
+        style: 'destructive',
+        onPress: () => logout(),
+      },
+    ]);
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <Header title="我的 / 设置" />
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         {/* 用户概览卡片 */}
-        <View style={styles.userCard}>
+        <TouchableOpacity
+          style={styles.userCard}
+          onPress={() => {
+            if (!isLoggedIn) {
+              navigation.navigate('Login');
+            } else {
+              Alert.alert(
+                '账户信息',
+                `用户：${user?.nickname || '糍粑学员'}\n手机：${user?.mobile || '未绑定'}\n邮箱：${user?.email || '未绑定'}`
+              );
+            }
+          }}
+          activeOpacity={0.8}
+        >
           <View style={styles.avatarCircle}>
-            <Ionicons name="person" size={32} color={Colors.primary} />
+            <Ionicons
+              name={isLoggedIn ? 'person' : 'person-outline'}
+              size={30}
+              color={isLoggedIn ? Colors.primary : Colors.textMuted}
+            />
           </View>
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>TOEFL 备考学者</Text>
-            <Text style={styles.userSub}>离线学习 · 数据纯本地存储</Text>
+            <Text style={styles.userName}>
+              {isLoggedIn ? (user?.nickname || user?.mobile || user?.email || '糍粑学者') : '点击登录 / 注册'}
+            </Text>
+            <Text style={styles.userSub}>
+              {isLoggedIn
+                ? (user?.vip ? '👑 鱼骨尊享会员' : '已登录 · 云端学习记录实时同步')
+                : '登录后开启跨设备词库同步与生词本云备份'}
+            </Text>
           </View>
-        </View>
+          <View style={styles.userActionRight}>
+            {!isLoggedIn ? (
+              <View style={styles.loginBadge}>
+                <Text style={styles.loginBadgeText}>去登录</Text>
+              </View>
+            ) : (
+              <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+            )}
+          </View>
+        </TouchableOpacity>
 
         {/* 学习总览 */}
         <View style={styles.statsCard}>
@@ -164,6 +211,55 @@ export const ProfileScreen: React.FC = () => {
           </View>
         </View>
 
+        {/* 账户安全 */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.cardHeaderTitle}>账户与安全</Text>
+
+          {isLoggedIn ? (
+            <>
+              <TouchableOpacity
+                style={styles.actionRow}
+                onPress={() => navigation.navigate('ChangePassword')}
+                activeOpacity={0.7}
+              >
+                <View style={styles.actionLeft}>
+                  <Ionicons name="key-outline" size={20} color={Colors.primary} />
+                  <Text style={styles.actionLabel}>修改登录密码</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.actionRow, styles.borderTop]}
+                onPress={handleLogout}
+                activeOpacity={0.7}
+              >
+                <View style={styles.actionLeft}>
+                  <Ionicons name="log-out-outline" size={20} color={Colors.textSecondary} />
+                  <Text style={[styles.actionLabel, { color: Colors.textSecondary }]}>
+                    退出登录
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => navigation.navigate('Login')}
+              activeOpacity={0.7}
+            >
+              <View style={styles.actionLeft}>
+                <Ionicons name="log-in-outline" size={20} color={Colors.primary} />
+                <Text style={[styles.actionLabel, { color: Colors.primary, fontWeight: '600' }]}>
+                  登录 / 注册糍粑账号
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.primary} />
+            </TouchableOpacity>
+          )}
+        </View>
+
         {/* 数据与存储 */}
         <View style={styles.sectionCard}>
           <Text style={styles.cardHeaderTitle}>数据与隐私</Text>
@@ -194,7 +290,7 @@ export const ProfileScreen: React.FC = () => {
         {/* 关于 */}
         <View style={styles.aboutFooter}>
           <Text style={styles.aboutText}>糍粑英语 · CibaEnglish v1.0.0</Text>
-          <Text style={styles.aboutSub}>无账号 · 无广告 · 纯粹的意群单词记忆工具</Text>
+          <Text style={styles.aboutSub}>科学意群背词 · 词根词缀互联 · 云端多端同步</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -244,6 +340,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Colors.textSecondary,
     marginTop: 3,
+  },
+  userActionRight: {
+    marginLeft: 8,
+  },
+  loginBadge: {
+    backgroundColor: Colors.primaryLight,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#F6D9B6',
+  },
+  loginBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.primary,
   },
   statsCard: {
     backgroundColor: Colors.card,
