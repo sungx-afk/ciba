@@ -3,6 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../theme/colors';
 
 import { HomeScreen } from '../screens/HomeScreen';
@@ -17,6 +18,12 @@ const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
+
+  // 图标容器固定 28 高（库内部 ICON_SIZE_TALL）+ 图标下间距 2 + 标签行高 16 = 46，
+  // 再留出上下呼吸空间，最后叠加底部安全区
+  const tabBarHeight = 60 + insets.bottom;
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -27,12 +34,18 @@ function MainTabs() {
           backgroundColor: Colors.card,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
+          height: tabBarHeight,
+          paddingBottom: insets.bottom,
+        },
+        tabBarItemStyle: {
+          justifyContent: 'center',
         },
         tabBarIconStyle: {
-          marginBottom: 3,
+          marginBottom: 2,
         },
         tabBarLabelStyle: {
           fontSize: 11,
+          lineHeight: 16,
           fontWeight: '600',
         },
         tabBarIcon: ({ focused, color, size }) => {
@@ -53,7 +66,7 @@ function MainTabs() {
       <Tab.Screen
         name="HomeTab"
         component={HomeScreen}
-        options={{ tabBarLabel: '意群分类' }}
+        options={{ tabBarLabel: '分类' }}
       />
       <Tab.Screen
         name="BookmarksTab"
@@ -63,7 +76,7 @@ function MainTabs() {
       <Tab.Screen
         name="ProfileTab"
         component={ProfileScreen}
-        options={{ tabBarLabel: '设置' }}
+        options={{ tabBarLabel: '我的' }}
       />
     </Tab.Navigator>
   );
