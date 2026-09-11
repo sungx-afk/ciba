@@ -103,9 +103,7 @@ export const RegisterScreen: React.FC = () => {
 
       if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
         await login(res.user, res.token);
-        Alert.alert('注册成功', `欢迎加入糍粑背单词，${res.user.nickname || '同学'}！`, [
-          { text: '开启学习', onPress: () => navigation.popToTop() },
-        ]);
+        navigation.popToTop();
       } else {
         Alert.alert('注册失败', res?.msg || '注册处理失败，请稍后重试');
       }

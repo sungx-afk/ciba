@@ -57,9 +57,7 @@ export const LoginScreen: React.FC = () => {
           });
           if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
             await login(res.user, res.token);
-            Alert.alert('登录成功', `欢迎回来，${res.user.nickname || '微信用户'}！`, [
-              { text: '开启背词', onPress: () => navigation.goBack() },
-            ]);
+            navigation.goBack();
           } else {
             Alert.alert('微信登录失败', res?.msg || '微信授权校验失败，请使用手机验证码登录');
           }
@@ -137,9 +135,7 @@ export const LoginScreen: React.FC = () => {
       const res = await AuthApi.mobileLogin(trimmedMobile, trimmedCode);
       if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
         await login(res.user, res.token);
-        Alert.alert('登录成功', `欢迎回来，${res.user.nickname || trimmedMobile}！`, [
-          { text: '开启背词', onPress: () => navigation.goBack() },
-        ]);
+        navigation.goBack();
       } else {
         Alert.alert('登录失败', res?.msg || '验证码错误或已过期');
       }
@@ -171,9 +167,7 @@ export const LoginScreen: React.FC = () => {
       const res = await AuthApi.emailLogin(trimmedAccount, password);
       if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
         await login(res.user, res.token);
-        Alert.alert('登录成功', `欢迎回来，${res.user.nickname || '学者'}！`, [
-          { text: '开启背词', onPress: () => navigation.goBack() },
-        ]);
+        navigation.goBack();
       } else {
         Alert.alert('登录失败', res?.msg || '账号或密码不正确');
       }
@@ -227,15 +221,6 @@ export const LoginScreen: React.FC = () => {
         console.warn('wechat auth url open failed, fallback to app:', authErr);
         await Linking.openURL('weixin://');
       }
-
-      Alert.alert(
-        '微信登录',
-        '已发起微信授权请求。若微信未自动弹出授权窗口，也可直接使用手机验证码一键登录。',
-        [
-          { text: '手机号快捷登录', onPress: () => setActiveTab('mobile') },
-          { text: '等待授权', style: 'cancel' },
-        ]
-      );
     } catch (err: any) {
       Alert.alert(
         '唤起微信提示',
@@ -309,9 +294,7 @@ export const LoginScreen: React.FC = () => {
 
       if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
         await login(res.user, res.token);
-        Alert.alert('登录成功', `欢迎回来，${res.user.nickname || fullName}！`, [
-          { text: '开启背词', onPress: () => navigation.goBack() },
-        ]);
+        navigation.goBack();
       } else {
         Alert.alert('Apple 登录失败', res?.msg || 'Apple 授权凭证校验失败，请稍后重试');
       }
