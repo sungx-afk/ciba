@@ -62,15 +62,15 @@ export const ForgotPasswordScreen: React.FC = () => {
       }
       try {
         const res = await AuthApi.sendMobileCode(trimmed, 'reset_pwd');
-        if (res && res.result === 1) {
+        if (res && (res.result === 0 || res.result === 1)) {
           Alert.alert('发送成功', '验证码已发送至您的手机');
           return true;
         } else {
-          Alert.alert('发送失败', res?.msg || '短信验证码发送失败');
+          Alert.alert('提示', res?.msg || '短信验证码发送失败');
           return false;
         }
       } catch (err: any) {
-        Alert.alert('发送失败', err.message || '网络连接异常');
+        Alert.alert('发送异常', err.message || '网络连接异常');
         return false;
       }
     } else {
@@ -80,15 +80,15 @@ export const ForgotPasswordScreen: React.FC = () => {
       }
       try {
         const res = await AuthApi.sendEmailCode(trimmed, 'reset_pwd');
-        if (res && res.result === 1) {
+        if (res && (res.result === 0 || res.result === 1)) {
           Alert.alert('发送成功', '验证码已发送至您的邮箱');
           return true;
         } else {
-          Alert.alert('发送失败', res?.msg || '邮箱验证码发送失败');
+          Alert.alert('提示', res?.msg || '邮箱验证码发送失败');
           return false;
         }
       } catch (err: any) {
-        Alert.alert('发送失败', err.message || '网络连接异常');
+        Alert.alert('发送异常', err.message || '网络连接异常');
         return false;
       }
     }
@@ -124,7 +124,7 @@ export const ForgotPasswordScreen: React.FC = () => {
         newPassword,
       });
 
-      if (res && res.result === 1) {
+      if (res && (res.result === 0 || res.result === 1)) {
         Alert.alert('重置成功', '您的登录密码已成功更新，请重新登录。', [
           {
             text: '去登录',

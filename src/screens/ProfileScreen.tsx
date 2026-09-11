@@ -11,27 +11,16 @@ import {
   Share,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
-import { useAuth } from '../context/AuthContext';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
 
-export const ProfileScreen: React.FC = () => {
-  const navigation = useNavigation<any>();
-  const { user: authUser, isLoggedIn: isAuthLoggedIn, logout: authLogout } = useAuth();
-  const {
-    state,
-    stats,
-    updateSettings,
-    resetProgress,
-    exportProgressData,
-    currentPack,
-    wordSource,
-  } = useProgress();
+interface ProfileScreenProps {
+  navigation: any;
+}
 
-  const isLoggedIn = isAuthLoggedIn;
-  const user = authUser;
+export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
+  const { state, stats, updateSettings, resetProgress, exportProgressData, user, isLoggedIn, logout, currentPack, wordSource } = useProgress();
 
   const handleGoalChange = (newGoal: number) => {
     updateSettings({ dailyGoal: newGoal });
@@ -73,15 +62,9 @@ export const ProfileScreen: React.FC = () => {
   };
 
   const handleLogout = () => {
-    Alert.alert('退出登录', '确定要退出当前账号吗？您的本地词库数据仍将保留。', [
+    Alert.alert('退出登录', '确定要退出登录吗？将切换回本地词库。', [
       { text: '取消', style: 'cancel' },
-      {
-        text: '退出登录',
-        style: 'destructive',
-        onPress: async () => {
-          await authLogout();
-        },
-      },
+      { text: '确定', style: 'destructive', onPress: () => logout() },
     ]);
   };
 
@@ -91,62 +74,44 @@ export const ProfileScreen: React.FC = () => {
 
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         {/* 用户概览卡片 */}
-        <TouchableOpacity
-          style={styles.userCard}
-          onPress={() => {
-            if (!isLoggedIn) {
-              navigation.navigate('Login');
-            } else {
-              Alert.alert(
-                '账户信息',
-                `用户：${user?.nickname || '糍粑学员'}\n手机：${user?.mobile || '未绑定'}\n邮箱：${user?.email || '未绑定'}`
-              );
-            }
-          }}
-          activeOpacity={0.8}
-        >
+        <View style={styles.userCard}>
           <View style={styles.avatarCircle}>
-            <Ionicons
-              name={isLoggedIn ? 'person' : 'person-outline'}
-              size={30}
-              color={isLoggedIn ? Colors.primary : Colors.textMuted}
-            />
+            <Ionicons name={isLoggedIn ? 'person' : 'log-in-outline'} size={32} color={Colors.primary} />
           </View>
           <View style={styles.userInfo}>
             <View style={styles.userNameRow}>
               <Text style={styles.userName} numberOfLines={1}>
-                {isLoggedIn ? user?.nickname || user?.loginName || '糍粑学员' : '点击登录 / 注册'}
+                {isLoggedIn ? user?.nickname || user?.loginName || '糍粑用户' : '未登录'}
               </Text>
               <TouchableOpacity
                 style={styles.vipButton}
-                onPress={(e) => {
-                  e.stopPropagation?.();
-                  navigation.navigate('Purchase');
-                }}
+                onPress={() => navigation.navigate('Purchase')}
                 activeOpacity={0.7}
               >
                 <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
-                <Text style={styles.vipButtonText}>
-                  {user?.vip ? '尊享会员' : '升级会员'}
-                </Text>
+                <Text style={styles.vipButtonText}>升级会员</Text>
               </TouchableOpacity>
             </View>
             <Text style={styles.userSub}>
               {isLoggedIn
-                ? (wordSource === 'remote' ? `在线同步 · ${currentPack?.name || '词库已连接'}` : '已登录 · 本地词库已同步')
-                : '登录后开启跨设备词库同步与生词本云备份'}
+                ? `已同步 · ${wordSource === 'remote' ? `词库: ${currentPack?.name || '在线'}` : '本地词库'}`
+                : '登录后可使用在线词库'}
             </Text>
           </View>
-          <View style={styles.userActionRight}>
-            {!isLoggedIn ? (
-              <View style={styles.loginBadge}>
-                <Text style={styles.loginBadgeText}>去登录</Text>
-              </View>
-            ) : (
-              <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
-            )}
-          </View>
-        </TouchableOpacity>
+          {isLoggedIn ? (
+            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
+              <Ionicons name="log-out-outline" size={18} color={Colors.pinwheelRed} />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.loginBtnSmall}
+              onPress={() => navigation.navigate('Login')}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.loginBtnSmallText}>登录</Text>
+            </TouchableOpacity>
+          )}
+        </View>
 
         {/* 词库切换 */}
         <TouchableOpacity
@@ -257,55 +222,6 @@ export const ProfileScreen: React.FC = () => {
           </View>
         </View>
 
-        {/* 账户安全 */}
-        <View style={styles.sectionCard}>
-          <Text style={styles.cardHeaderTitle}>账户与安全</Text>
-
-          {isLoggedIn ? (
-            <>
-              <TouchableOpacity
-                style={styles.actionRow}
-                onPress={() => navigation.navigate('ChangePassword')}
-                activeOpacity={0.7}
-              >
-                <View style={styles.actionLeft}>
-                  <Ionicons name="key-outline" size={20} color={Colors.primary} />
-                  <Text style={styles.actionLabel}>修改登录密码</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.actionRow, styles.borderTop]}
-                onPress={handleLogout}
-                activeOpacity={0.7}
-              >
-                <View style={styles.actionLeft}>
-                  <Ionicons name="log-out-outline" size={20} color={Colors.textSecondary} />
-                  <Text style={[styles.actionLabel, { color: Colors.textSecondary }]}>
-                    退出登录
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
-              </TouchableOpacity>
-            </>
-          ) : (
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={() => navigation.navigate('Login')}
-              activeOpacity={0.7}
-            >
-              <View style={styles.actionLeft}>
-                <Ionicons name="log-in-outline" size={20} color={Colors.primary} />
-                <Text style={[styles.actionLabel, { color: Colors.primary, fontWeight: '600' }]}>
-                  登录 / 注册糍粑账号
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.primary} />
-            </TouchableOpacity>
-          )}
-        </View>
-
         {/* 数据与存储 */}
         <View style={styles.sectionCard}>
           <Text style={styles.cardHeaderTitle}>数据与隐私</Text>
@@ -336,7 +252,7 @@ export const ProfileScreen: React.FC = () => {
         {/* 关于 */}
         <View style={styles.aboutFooter}>
           <Text style={styles.aboutText}>糍粑英语 · CibaEnglish v1.0.0</Text>
-          <Text style={styles.aboutSub}>科学意群背词 · 词根词缀互联 · 云端多端同步</Text>
+          <Text style={styles.aboutSub}>无账号 · 无广告 · 纯粹的意群单词记忆工具</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -380,66 +296,48 @@ const styles = StyleSheet.create({
   userNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
   },
   userName: {
     fontSize: 18,
     fontWeight: '800',
     color: Colors.textPrimary,
+    flexShrink: 1,
   },
   vipButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    backgroundColor: Colors.primaryLight,
+    marginLeft: 8,
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingVertical: 3,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
   },
   vipButtonText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
     color: Colors.primary,
+    marginLeft: 2,
   },
   userSub: {
     fontSize: 12,
     color: Colors.textSecondary,
     marginTop: 3,
   },
-  userActionRight: {
-    marginLeft: 8,
+  logoutBtn: {
+    padding: 8,
   },
-  loginBadge: {
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#F6D9B6',
+  loginBtnSmall: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
   },
-  loginBadgeText: {
-    fontSize: 12,
+  loginBtnSmallText: {
+    color: '#FFFFFF',
+    fontSize: 13,
     fontWeight: '700',
-    color: Colors.primary,
-  },
-  sectionCard: {
-    backgroundColor: Colors.card,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 16,
-  },
-  rowCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
-  },
-  packInfo: {
-    marginLeft: 12,
   },
   statsCard: {
     backgroundColor: Colors.card,
@@ -458,7 +356,7 @@ const styles = StyleSheet.create({
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 10,
   },
   statBox: {
     flex: 1,
@@ -478,37 +376,47 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 4,
   },
+  sectionCard: {
+    backgroundColor: Colors.card,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: 16,
+  },
   goalRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
   },
   goalChip: {
     flex: 1,
     paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: Colors.background,
+    borderRadius: 10,
+    backgroundColor: Colors.divider,
     alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: 'transparent',
   },
   goalChipActive: {
-    backgroundColor: Colors.primaryLight,
-    borderColor: Colors.primary,
+    backgroundColor: Colors.primary,
   },
   goalChipText: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
     color: Colors.textSecondary,
   },
   goalChipTextActive: {
-    color: Colors.primary,
-    fontWeight: '700',
+    color: '#FFFFFF',
   },
   settingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
+    paddingVertical: 8,
+  },
+  borderTop: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.divider,
+    marginTop: 8,
+    paddingTop: 12,
   },
   settingLabel: {
     fontSize: 14,
@@ -516,15 +424,15 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
   },
   settingDesc: {
-    fontSize: 12,
+    fontSize: 11,
     color: Colors.textMuted,
     marginTop: 2,
   },
   accentToggle: {
     flexDirection: 'row',
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.divider,
     borderRadius: 8,
-    padding: 2,
+    padding: 3,
   },
   accentOption: {
     paddingHorizontal: 12,
@@ -532,7 +440,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   accentOptionActive: {
-    backgroundColor: Colors.card,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
   },
   accentText: {
     fontSize: 12,
@@ -546,21 +459,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
   actionLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
     flex: 1,
+  },
+  packInfo: {
+    flex: 1,
+  },
+  rowCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   actionLabel: {
     fontSize: 14,
+    fontWeight: '600',
     color: Colors.textPrimary,
-    marginLeft: 12,
-  },
-  borderTop: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.divider,
   },
   aboutFooter: {
     alignItems: 'center',
@@ -568,6 +486,7 @@ const styles = StyleSheet.create({
   },
   aboutText: {
     fontSize: 12,
+    fontWeight: '600',
     color: Colors.textMuted,
   },
   aboutSub: {

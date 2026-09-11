@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { UserInfo, AuthApi } from '../services/api';
+import { UserInfo, AuthApi, setToken as setApiToken } from '../services/api';
 
 interface AuthContextType {
   user: UserInfo | null;
@@ -40,6 +40,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const storedUser = await AsyncStorage.getItem(USER_KEY);
         if (storedToken && storedUser) {
           setToken(storedToken);
+          await setApiToken(storedToken);
           setUser(JSON.parse(storedUser));
         }
       } catch (e) {
@@ -56,6 +57,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       setUser(newUser);
       setToken(newToken);
+      await setApiToken(newToken);
       await AsyncStorage.setItem(TOKEN_KEY, newToken);
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(newUser));
     } catch (e) {
@@ -68,6 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       setUser(null);
       setToken(null);
+      await setApiToken(null);
       await AsyncStorage.removeItem(TOKEN_KEY);
       await AsyncStorage.removeItem(USER_KEY);
     } catch (e) {
@@ -88,7 +91,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!token) return;
     try {
       const res = await AuthApi.getMyInfo();
-      if (res && res.result === 1 && res.user) {
+      if (res && (res.result === 0 || res.result === 1) && res.user) {
         setUser(res.user);
         await AsyncStorage.setItem(USER_KEY, JSON.stringify(res.user));
       }

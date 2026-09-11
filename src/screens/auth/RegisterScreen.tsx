@@ -61,11 +61,11 @@ export const RegisterScreen: React.FC = () => {
 
     try {
       const res = await AuthApi.sendMobileCode(trimmed, 'register');
-      if (res && res.result === 1) {
+      if (res && (res.result === 0 || res.result === 1)) {
         Alert.alert('发送成功', '验证码已发送至您的手机');
         return true;
       } else {
-        Alert.alert('发送失败', res?.msg || '短信验证码发送失败');
+        Alert.alert('提示', res?.msg || '短信验证码发送失败');
         return false;
       }
     } catch (e: any) {
@@ -84,11 +84,11 @@ export const RegisterScreen: React.FC = () => {
 
     try {
       const res = await AuthApi.sendEmailCode(trimmed, 'register');
-      if (res && res.result === 1) {
+      if (res && (res.result === 0 || res.result === 1)) {
         Alert.alert('发送成功', '验证码已发送至您的邮箱');
         return true;
       } else {
-        Alert.alert('发送失败', res?.msg || '邮箱验证码发送失败');
+        Alert.alert('提示', res?.msg || '邮箱验证码发送失败');
         return false;
       }
     } catch (e: any) {
@@ -132,7 +132,7 @@ export const RegisterScreen: React.FC = () => {
           nickname: nickname.trim() || undefined,
         });
 
-        if (res && res.result === 1 && res.user && res.token) {
+        if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
           await login(res.user, res.token);
           Alert.alert('注册成功', `欢迎加入糍粑背单词，${res.user.nickname || '同学'}！`, [
             { text: '开启学习', onPress: () => navigation.popToTop() },
@@ -156,7 +156,7 @@ export const RegisterScreen: React.FC = () => {
           nickname: nickname.trim() || undefined,
         });
 
-        if (res && res.result === 1 && res.user && res.token) {
+        if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
           await login(res.user, res.token);
           Alert.alert('注册成功', `欢迎加入糍粑背单词，${res.user.nickname || '同学'}！`, [
             { text: '开启学习', onPress: () => navigation.popToTop() },
@@ -256,7 +256,7 @@ export const RegisterScreen: React.FC = () => {
                     iconName="phone-portrait-outline"
                     prefix="+86"
                     value={formatMobile(mobile)}
-                    onChangeText={(text) => handleMobileChange(text)}
+                    onChangeText={handleMobileChange}
                     onClear={() => setMobile('')}
                   />
 

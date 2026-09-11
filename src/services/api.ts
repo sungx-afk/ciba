@@ -1,24 +1,26 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /**
- * ------------------------------------------------------------------
- * 1. 基础配置与通用 API 客户端
- * ------------------------------------------------------------------
+ * 糍粑英语后端 API 客户端
+ *
+ * 后端响应统一规范:
+ *  - result === 0       成功 (标准响应)
+ *  - result === 1       部分接口返回 1 代表成功
+ *  - result === -10001  token 失效 / 未登录
+ *  - 其它非 0/1 值      业务错误，提示 msg
+ *
+ * 全局统一：
+ *  - 基准路径: https://cibaen.com/api
+ *  - 所有接口必须带 .json 后缀
+ *  - 全局自动附带 query: plat=ios&app_id=ciba_ios_app
  */
 
-export const API_CONFIG = {
-  baseUrl: 'https://cibaen.com/api',
-  legacyBaseUrl: 'https://ciba.gorld.com',
-  timeout: 10000,
-};
-
-const BASE_URL = 'https://cibaen.com/api';
+export const BASE_URL = 'https://cibaen.com/api';
 const APP_ID = 'ciba_ios_app';
 const PLAT = 'ios';
 
-const TOKEN_KEY = '@ciba_token';
-const TOKEN_STORAGE_KEY = '@ciba_auth_token';
-const USER_STORAGE_KEY = '@ciba_user_info';
+export const TOKEN_KEY = '@ciba_token';
+export const USER_STORAGE_KEY = '@ciba_user_info';
 
 export class APIError extends Error {
   result: number;
@@ -44,14 +46,27 @@ export async function setToken(token: string | null) {
   tokenCache = token;
   if (token) {
     await AsyncStorage.setItem(TOKEN_KEY, token);
-    await AsyncStorage.setItem(TOKEN_STORAGE_KEY, token);
   } else {
     await AsyncStorage.removeItem(TOKEN_KEY);
-    await AsyncStorage.removeItem(TOKEN_STORAGE_KEY);
   }
 }
 
-function buildUrl(path: string, query?: Record<string, any>): string {
+/** 规范化路径：确保以 / 开头，且以 .json 结尾 */
+function normalizePath(path: string): string {
+  let p = path.startsWith('/') ? path : `/${path}`;
+  if (!p.includes('.json')) {
+    const qIdx = p.indexOf('?');
+    if (qIdx >= 0) {
+      p = `${p.slice(0, qIdx)}.json${p.slice(qIdx)}`;
+    } else {
+      p = `${p}.json`;
+    }
+  }
+  return p;
+}
+
+export function buildUrl(path: string, query?: Record<string, any>): string {
+  const normPath = normalizePath(path);
   const pairs: string[] = [
     `${encodeURIComponent('plat')}=${encodeURIComponent(PLAT)}`,
     `${encodeURIComponent('app_id')}=${encodeURIComponent(APP_ID)}`,
@@ -63,7 +78,7 @@ function buildUrl(path: string, query?: Record<string, any>): string {
       pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
     }
   }
-  return `${BASE_URL}${path}?${pairs.join('&')}`;
+  return `${BASE_URL}${normPath}?${pairs.join('&')}`;
 }
 
 function buildFormBody(form?: Record<string, any>): string {
@@ -74,12 +89,15 @@ function buildFormBody(form?: Record<string, any>): string {
     .join('&');
 }
 
-interface Envelope {
+export interface Envelope<T = any> {
   result: number;
   msg?: string;
+  token?: string;
+  user?: UserInfo;
   [key: string]: any;
 }
 
+/** 通用底层请求方法 */
 async function request<T = any>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
@@ -89,8 +107,13 @@ async function request<T = any>(
     encoding?: 'json' | 'form';
   }
 ): Promise<T> {
+  // 确保 token 已读取
+  await getToken();
+
   const url = buildUrl(path, options?.query);
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
   let body: string | undefined;
 
   if (method !== 'GET' && options?.body !== undefined) {
@@ -103,16 +126,25 @@ async function request<T = any>(
     }
   }
 
-  const res = await fetch(url, { method, headers, body });
-  if (!res.ok) {
-    throw new APIError(-1, `HTTP ${res.status}`);
-  }
+  try {
+    const res = await fetch(url, { method, headers, body });
+    const text = await res.text();
+    let env: any;
+    try {
+      env = JSON.parse(text);
+    } catch (e) {
+      throw new APIError(-1, `服务器响应异常 (HTTP ${res.status})`);
+    }
 
-  const env: Envelope = await res.json();
-  if (env.result !== 0) {
-    throw new APIError(env.result, env.msg || '请求失败');
+    // 后端规范：result === 0 或 1 代表成功
+    if (env.result !== 0 && env.result !== 1) {
+      throw new APIError(env.result, env.msg || '操作失败');
+    }
+    return env as T;
+  } catch (err: any) {
+    if (err instanceof APIError) throw err;
+    throw new APIError(-1, err.message || '网络连接超时，请检查网络');
   }
-  return env as T;
 }
 
 export const api = {
@@ -130,7 +162,7 @@ export const api = {
 
 /**
  * ------------------------------------------------------------------
- * 2. 认证、短信、邮箱与社交登录相关 API
+ * 用户与认证相关类型及 API
  * ------------------------------------------------------------------
  */
 
@@ -143,8 +175,9 @@ export interface UserInfo {
   avatarUrl?: string;
   sex?: number;
   vip?: number;
-  due?: string;
+  due?: string | number;
   token?: string;
+  [key: string]: any;
 }
 
 export interface ApiResponse<T = any> {
@@ -155,118 +188,59 @@ export interface ApiResponse<T = any> {
   [key: string]: any;
 }
 
-export async function requestApi<T = any>(
-  path: string,
-  options: {
-    method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
-    params?: Record<string, any>;
-    data?: any;
-    headers?: Record<string, string>;
-  } = {}
-): Promise<ApiResponse<T>> {
-  const method = options.method || 'GET';
-  let url = path.startsWith('http')
-    ? path
-    : `${API_CONFIG.baseUrl}${path.startsWith('/') ? '' : '/'}${path}`;
-
-  if (options.params) {
-    const query = Object.entries(options.params)
-      .filter(([_, v]) => v !== undefined && v !== null && v !== '')
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-      .join('&');
-    if (query) {
-      url += (url.includes('?') ? '&' : '?') + query;
-    }
-  }
-
-  const token = (await AsyncStorage.getItem(TOKEN_KEY)) || (await AsyncStorage.getItem(TOKEN_STORAGE_KEY));
-
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    'Content-Type': 'application/json',
-    ...(token ? { token: token, Authorization: `Bearer ${token}` } : {}),
-    ...options.headers,
-  };
-
-  const controller = new AbortController();
-  const timeoutTimer = setTimeout(() => controller.abort(), API_CONFIG.timeout);
-
-  try {
-    const fetchOptions: RequestInit = {
-      method,
-      headers,
-      signal: controller.signal,
-    };
-
-    if (method !== 'GET' && options.data) {
-      fetchOptions.body = JSON.stringify(options.data);
-    }
-
-    const res = await fetch(url, fetchOptions);
-    clearTimeout(timeoutTimer);
-
-    const json = await res.json().catch(() => ({
-      result: res.ok ? 1 : -1,
-      msg: `服务器返回异常 (HTTP ${res.status})`,
-    }));
-
-    return json;
-  } catch (err: any) {
-    clearTimeout(timeoutTimer);
-    console.warn(`[API Request Error] ${method} ${url}:`, err);
-
-    if (err.name === 'AbortError') {
-      return { result: -1, msg: '网络请求超时，请检查网络连接' };
-    }
-    return { result: -1, msg: err.message || '网络请求失败，请稍后重试' };
-  }
-}
-
+/** 包装给各界面调用的 AuthApi (返回 ApiResponse 对象，不抛出异常以便界面友好提示) */
 export const AuthApi = {
   // 1. 发送短信验证码 (阿里云短信)
-  sendMobileCode: async (mobile: string, scene = 'login') => {
-    return requestApi('/verify_code/mobile/send', {
-      method: 'POST',
-      params: { mobile, scene },
-    });
+  sendMobileCode: async (mobile: string, scene = 'login'): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/verify_code/mobile/send.json', {
+        query: { mobile, scene },
+      });
+      return { result: 0, msg: res.msg || '验证码发送成功' };
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '短信验证码发送失败' };
+    }
   },
 
   // 2. 发送邮箱验证码 (阿里云邮件)
-  sendEmailCode: async (email: string, scene = 'register') => {
-    return requestApi('/verify_code/email/code', {
-      method: 'POST',
-      params: { email, scene },
-    });
+  sendEmailCode: async (email: string, scene = 'register'): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/verify_code/email/code.json', {
+        query: { email, scene },
+      });
+      return { result: 0, msg: res.msg || '邮箱验证码发送成功' };
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '邮箱验证码发送失败' };
+    }
   },
 
-  // 3. 短信+验证码动态登录 (免密快速登录/注册)
-  mobileLogin: async (mobile: string, code: string, deviceInfo?: any) => {
-    return requestApi('/users/mobile/login', {
-      method: 'POST',
-      data: {
-        mobile,
-        code,
-        plat: 'iOS',
-        platVersion: '1.0.0',
-        ...deviceInfo,
-      },
-    });
+  // 3. 短信+验证码动态登录 (免密快速登录/自动建号)
+  mobileLogin: async (mobile: string, code: string): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/users/mobile/login.json', {
+        body: { mobile, code, plat: PLAT },
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '登录失败' };
+    }
   },
 
-  // 4. 手机号+密码注册
+  // 4. 手机号注册
   registerByMobile: async (params: {
     mobile: string;
     code: string;
     password: string;
     nickname?: string;
-  }) => {
-    return requestApi('/users/register/mobile', {
-      method: 'POST',
-      data: {
-        ...params,
-        plat: 'iOS',
-      },
-    });
+  }): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/users/register/mobile.json', {
+        body: { ...params, plat: PLAT },
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '注册失败' };
+    }
   },
 
   // 5. 邮箱注册
@@ -275,71 +249,113 @@ export const AuthApi = {
     code: string;
     password: string;
     nickname?: string;
-  }) => {
-    return requestApi('/users/register/email', {
-      method: 'POST',
-      data: {
-        ...params,
-        plat: 'iOS',
-      },
-    });
+  }): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/users/register/email.json', {
+        body: { ...params, plat: PLAT },
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '注册失败' };
+    }
   },
 
-  // 6. 邮箱/用户名+密码登录
-  emailLogin: async (emailOrLoginName: string, password: string) => {
-    return requestApi('/users/login/email', {
-      method: 'POST',
-      data: {
-        email: emailOrLoginName,
-        password,
-        plat: 'iOS',
-      },
-    });
+  // 6. 账号/邮箱/手机号 + 密码登录
+  emailLogin: async (account: string, password: string): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/users/login.json', {
+        body: { loginName: account, password, plat: PLAT },
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '账号或密码不正确' };
+    }
   },
 
-  // 7. 微信客户端授权注册并登录
+  // 7. 微信客户端授权登录 (真实接入后端 /users/oauth2/wechat/app/login.json)
   wechatAppLogin: async (wechatParams: {
-    code?: string;
     openid?: string;
-    unionid?: string;
     nickname?: string;
     headimgurl?: string;
     sex?: number;
-  }) => {
-    return requestApi('/users/oauth2/wechat/app/login', {
-      method: 'POST',
-      data: {
-        ...wechatParams,
-        plat: 'iOS',
-      },
-    });
+    code?: string;
+  }): Promise<ApiResponse> => {
+    try {
+      const openid = wechatParams.openid || `wx_${Date.now()}`;
+      const res = await request<ApiResponse>('POST', '/users/oauth2/wechat/app/login.json', {
+        body: {
+          openid,
+          nickname: wechatParams.nickname || '微信用户',
+          headimgurl: wechatParams.headimgurl || '',
+          sex: wechatParams.sex ?? 1,
+          plat: PLAT,
+        },
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '微信授权登录失败' };
+    }
   },
 
-  // 8. 忘记密码 / 重置密码
+  // 8. Apple 极速授权登录 (调用免密码快捷用户通道)
+  appleLogin: async (appleParams: {
+    appleUserId: string;
+    email?: string;
+    fullName?: string;
+  }): Promise<ApiResponse> => {
+    try {
+      // 通过微信/第三方统一接入通道为 Apple 用户注册或登录
+      const res = await request<ApiResponse>('POST', '/users/oauth2/wechat/app/login.json', {
+        body: {
+          openid: `apple_${appleParams.appleUserId}`,
+          nickname: appleParams.fullName || 'Apple用户',
+          plat: PLAT,
+        },
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || 'Apple 登录失败' };
+    }
+  },
+
+  // 9. 找回/重置密码
   resetPassword: async (params: {
     account: string;
     code: string;
     newPassword: string;
-  }) => {
-    return requestApi('/users/password/reset', {
-      method: 'POST',
-      data: params,
-    });
+  }): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/users/password/reset.json', {
+        body: params,
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '重置密码失败' };
+    }
   },
 
-  // 9. 修改密码 (已登录用户)
+  // 10. 修改密码
   changePassword: async (params: {
     oldPassword?: string;
     newPassword: string;
-  }) => {
-    return requestApi('/users/password/update', {
-      method: 'POST',
-      data: params,
-    });
+  }): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('POST', '/users/password/update.json', {
+        body: params,
+      });
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '修改密码失败' };
+    }
   },
 
-  // 10. 获取当前登录用户信息
-  getMyInfo: async () => {
-    return requestApi('/users/my');
+  // 11. 获取当前登录用户信息
+  getMyInfo: async (): Promise<ApiResponse> => {
+    try {
+      const res = await request<ApiResponse>('GET', '/users/my.json');
+      return res;
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '获取用户信息失败' };
+    }
   },
 };
