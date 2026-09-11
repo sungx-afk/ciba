@@ -86,23 +86,23 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
           data={packs}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={styles.listContent}
-          ListHeaderComponent={
-            <View style={styles.localSection}>
-              <TouchableOpacity style={styles.localCard} onPress={handleUseLocal} activeOpacity={0.7}>
-                <View style={styles.localIconWrap}>
-                  <Ionicons name="folder-open-outline" size={24} color={Colors.primary} />
-                </View>
-                <View style={styles.localInfo}>
-                  <Text style={styles.localTitle}>本地词库 (TOEFL 意群)</Text>
-                  <Text style={styles.localDesc}>内置 9800+ 托福词汇，按意群分类</Text>
-                </View>
-                {currentPack === null && (
-                  <Ionicons name="checkmark-circle" size={22} color={Colors.success} />
-                )}
-              </TouchableOpacity>
-              <Text style={styles.sectionLabel}>在线词库</Text>
-            </View>
-          }
+          // ListHeaderComponent={
+          //   <View style={styles.localSection}>
+          //     <TouchableOpacity style={styles.localCard} onPress={handleUseLocal} activeOpacity={0.7}>
+          //       <View style={styles.localIconWrap}>
+          //         <Ionicons name="folder-open-outline" size={24} color={Colors.primary} />
+          //       </View>
+          //       <View style={styles.localInfo}>
+          //         <Text style={styles.localTitle}>本地词库 (TOEFL 意群)</Text>
+          //         <Text style={styles.localDesc}>内置 9800+ 托福词汇，按意群分类</Text>
+          //       </View>
+          //       {currentPack === null && (
+          //         <Ionicons name="checkmark-circle" size={22} color={Colors.success} />
+          //       )}
+          //     </TouchableOpacity>
+          //     <Text style={styles.sectionLabel}>词库列表</Text>
+          //   </View>
+          // }
           renderItem={({ item }) => {
             const isActive = currentPack?.id === item.id;
             const isLoadingThis = loadingPackId === item.id;
@@ -133,7 +133,7 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
                       {item.card_count ? `${item.card_count} 词` : '—'}
                     </Text>
                   </View>
-                  {typeof item.price === 'number' && item.price > 0 ? (
+                  {/* {typeof item.price === 'number' && item.price > 0 ? (
                     <View style={styles.priceTag}>
                       <Text style={styles.priceText}>¥{item.price}</Text>
                     </View>
@@ -141,7 +141,7 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
                     <View style={styles.freeTag}>
                       <Text style={styles.freeText}>免费</Text>
                     </View>
-                  )}
+                  )} */}
                 </View>
                 {isLoadingThis && (
                   <View style={styles.loadingOverlay}>
