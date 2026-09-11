@@ -8,6 +8,7 @@ on:
     paths:
       - 'src/**'
       - 'App.tsx'
+      - 'index.js'
       - 'app.json'
       - 'package.json'
       - 'package-lock.json'
