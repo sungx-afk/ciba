@@ -18,6 +18,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const BASE_URL = 'https://cibaen.com/api';
 const APP_ID = 'ciba_ios_app';
 const PLAT = 'ios';
+/** 与 web / 小程序端保持一致的客户端版本号 */
+const BUILD = '999999';
 
 export const TOKEN_KEY = '@ciba_token';
 export const USER_STORAGE_KEY = '@ciba_user_info';
@@ -70,12 +72,22 @@ export function buildUrl(path: string, query?: Record<string, any>): string {
   const pairs: string[] = [
     `${encodeURIComponent('plat')}=${encodeURIComponent(PLAT)}`,
     `${encodeURIComponent('app_id')}=${encodeURIComponent(APP_ID)}`,
+    `${encodeURIComponent('build')}=${encodeURIComponent(BUILD)}`,
   ];
   if (tokenCache) pairs.push(`token=${encodeURIComponent(tokenCache)}`);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v === undefined || v === null || v === '') continue;
-      pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+      const key = encodeURIComponent(k);
+      // 数组参数需要展开成重复 key，例如 type=0&type=1&type=4
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          if (item === undefined || item === null || item === '') continue;
+          pairs.push(`${key}=${encodeURIComponent(String(item))}`);
+        }
+      } else {
+        pairs.push(`${key}=${encodeURIComponent(String(v))}`);
+      }
     }
   }
   return `${BASE_URL}${normPath}?${pairs.join('&')}`;

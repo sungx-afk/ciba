@@ -32,8 +32,8 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
   const loadPacks = async () => {
     setLoading(true);
     try {
-      const list = await packLibrary.fetchMarketPacks();
-      setPacks(list);
+      const { packs } = await packLibrary.fetchMarketPacks();
+      setPacks(packs);
     } catch (e: any) {
       Alert.alert('加载失败', e?.message || '无法获取词库列表');
     } finally {

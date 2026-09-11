@@ -12,7 +12,10 @@ export interface RemotePack {
   summary?: string;
   price?: number;
   card_count?: number;
+  parent_id?: number;
+  cat_id?: number;
   catId?: number;
+  pack_type?: string;
   storeStatus?: number;
   status?: number;
   today_card_count?: number;
@@ -64,6 +67,25 @@ interface MarketPacksResponse {
   total?: number;
 }
 
+/** GET /anki/pack.json 响应 (我的卡组 / 分类卡组) */
+interface PackListResponse {
+  result: number;
+  msg?: string;
+  packs: RemotePack[];
+  total?: number;
+}
+
+/** 拉取结果 */
+export interface PackListResult {
+  packs: RemotePack[];
+  total: number;
+}
+
+export interface TodayWordsResult {
+  words: Word[];
+  total: number;
+}
+
 interface PackDetailResponse {
   result: number;
   msg?: string;
@@ -98,19 +120,113 @@ class PackLibrary {
   /** 英语词库分类 id (cibaen.com 上英语类目的 catId) */
   static readonly ENGLISH_CAT_ID = 4;
   static readonly STORE_APPROVED = 2;
+  /** 分类背单词卡组类型：只有该类型的卡组才出现在「我的卡组」中 */
+  static readonly PACK_TYPE_QIAN_WEN_CAT = 'qian_wen_cat';
 
-  /** 拉取市场中已上架的英语词库 */
+  /**
+   * 我的卡组: GET /anki/pack.json
+   *  - parentId = 0 (不传) 时返回顶层卡组，用于顶部切换
+   *  - parentId = 父卡组 id 时返回其下的分类卡组
+   */
+  async fetchPackList(
+    options: { start?: number; limit?: number; parentId?: number } = {}
+  ): Promise<PackListResult> {
+    const { start = 0, limit = 50, parentId } = options;
+    const query: Record<string, any> = { start, limit };
+    if (parentId !== undefined && parentId !== null) {
+      query.parentId = parentId;
+    }
+    const rsp = await api.get<PackListResponse>('/anki/pack.json', query);
+    return { packs: rsp.packs || [], total: rsp.total || 0 };
+  }
+
+  /** 顶部切换用的顶层卡组 (parentId = 0)，只保留 pack_type = qian_wen_cat */
+  async fetchMyPacks(
+    options: { start?: number; limit?: number } = {}
+  ): Promise<PackListResult> {
+    const { packs, total } = await this.fetchPackList({ ...options, parentId: 0 });
+    const filtered = packs.filter(
+      (p) => p.pack_type === PackLibrary.PACK_TYPE_QIAN_WEN_CAT
+    );
+    return { packs: filtered, total: filtered.length };
+  }
+
+  /** 某个父卡组下的分类卡组 (parentId = 父卡组 id) */
+  async fetchSubPacks(
+    parentId: number,
+    options: { start?: number; limit?: number } = {}
+  ): Promise<PackListResult> {
+    return this.fetchPackList({ ...options, parentId });
+  }
+
+  /**
+   * 子卡组全部单词列表（用于单词列表页）:
+   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=100
+   * 不带 type 参数时返回该卡组下全部卡片
+   */
+  async fetchPackWords(
+    packId: number,
+    options: { start?: number; limit?: number; cat?: string; sub?: string } = {}
+  ): Promise<TodayWordsResult> {
+    const { start = 0, limit = 100, cat = '', sub = '' } = options;
+    const rsp = await api.get<LearnResponse>(`/anki/pack/${packId}/learn-by-menu.json`, {
+      start,
+      limit,
+    });
+    const words = (rsp.cards || []).map((c) => this.mapCardToWord(c, cat, sub));
+    return { words, total: rsp.total || 0 };
+  }
+
+  /**
+   * 今日学习单词列表:
+   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=50&type=0&type=1&type=4
+   */
+  async fetchTodayWords(
+    packId: number,
+    options: {
+      start?: number;
+      limit?: number;
+      types?: number[];
+      cat?: string;
+      sub?: string;
+    } = {}
+  ): Promise<TodayWordsResult> {
+    const { start = 0, limit = 50, types = [0, 1, 4], cat = '', sub = '' } = options;
+    const rsp = await api.get<LearnResponse>(
+      `/anki/pack/${packId}/learn-by-menu.json`,
+      { start, limit, type: types }
+    );
+    const words = (rsp.cards || []).map((c) => this.mapCardToWord(c, cat, sub));
+    return { words, total: rsp.total || 0 };
+  }
+
+  /**
+   * 卡组市场列表:
+   * GET /anki/pack/in-store.json?start=0&limit=50&catId=4&storeStatus=2
+   *     &sorters=[{"direction":"desc","column":"order_num"}]
+   * 只保留 pack_type = qian_wen_cat 的分类背单词卡组
+   */
   async fetchMarketPacks(
-    catId: number = PackLibrary.ENGLISH_CAT_ID,
-    limit: number = 100
-  ): Promise<RemotePack[]> {
+    options: { start?: number; limit?: number; catId?: number; storeStatus?: number } = {}
+  ): Promise<PackListResult> {
+    const {
+      start = 0,
+      limit = 50,
+      catId = PackLibrary.ENGLISH_CAT_ID,
+      storeStatus = PackLibrary.STORE_APPROVED,
+    } = options;
+    const sorters = JSON.stringify([{ direction: 'desc', column: 'order_num' }]);
     const rsp = await api.get<MarketPacksResponse>('/anki/pack/in-store.json', {
-      start: 0,
+      start,
       limit,
       catId,
-      storeStatus: PackLibrary.STORE_APPROVED,
+      storeStatus,
+      sorters,
     });
-    return rsp.packs || [];
+    const packs = (rsp.packs || []).filter(
+      (p) => p.pack_type === PackLibrary.PACK_TYPE_QIAN_WEN_CAT
+    );
+    return { packs, total: packs.length };
   }
 
   /** 拉取词库详情 */
@@ -172,7 +288,7 @@ class PackLibrary {
    * 把远程卡片转换为本地 Word 模型
    *  - word    <- note.name
    *  - meaning <- note.data.translation
-   *  - note    <- 音标 + 助记信息 (从 note.data 提取)
+   *  - note    <- 音标 + 助记 + 例句 + 辨析 (从 note.data 提取)
    */
   mapCardToWord(card: RemoteCard, cat = '', sub = ''): Word {
     const note = card.note || ({} as RemoteNote);
@@ -184,19 +300,63 @@ class PackLibrary {
         // ignore
       }
     }
-    const phonetic = noteData.phonetic ? `[${noteData.phonetic}]` : '';
+
+    const parts: string[] = [];
+    if (noteData.phonetic) {
+      parts.push(`[${noteData.phonetic}]`);
+    }
+
+    const pushText = (label: string, value: any) => {
+      if (typeof value === 'string' && value.trim()) {
+        parts.push(`${label}: ${value.trim()}`);
+      }
+    };
+
+    pushText('助记', (noteData as any).memory_method);
+    pushText('辨析', (noteData as any).word_difference);
+
+    const sentences = (noteData as any).sentences;
+    if (Array.isArray(sentences) && sentences.length) {
+      const lines = sentences
+        .filter((s: any) => s && (s.english || s.chinese))
+        .map((s: any) => `• ${s.english || ''}${s.chinese ? `  ${s.chinese}` : ''}`);
+      if (lines.length) {
+        parts.push(`例句:\n${lines.join('\n')}`);
+      }
+    }
+
+    // 其余标量字段兜底展示
     const extra = Object.entries(noteData)
-      .filter(([k]) => !['phonetic', 'translation', 'ph_en_mp3', 'ph_am_mp3', 'audio'].includes(k))
-      .map(([k, v]) => `${k}: ${v}`)
-      .join('\n');
+      .filter(
+        ([k]) =>
+          ![
+            'phonetic',
+            'translation',
+            'word',
+            'memory_method',
+            'word_difference',
+            'sentences',
+            'ph_en',
+            'ph_am',
+            'ph_en_mp3',
+            'ph_am_mp3',
+            'audio',
+          ].includes(k)
+      )
+      .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
+      .map(([k, v]) => `${k}: ${v}`);
+    if (extra.length) {
+      parts.push(extra.join('\n'));
+    }
 
     return {
       id: card.id,
-      word: note.name || '',
+      word: note.name || (card as any).name || '',
       meaning: noteData.translation || '',
-      note: [phonetic, extra].filter(Boolean).join('\n'),
+      note: parts.join('\n'),
       cat,
       sub,
+      packageId: card.package_id,
     };
   }
 

@@ -22,13 +22,37 @@ interface FlashcardScreenProps {
 }
 
 export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigation }) => {
-  const { category, subCategory, singleWordId, onlyDue, filter } = route.params || {};
-  const { state, stats, recordReview, toggleBookmark, words } = useProgress();
+  const { category, subCategory, singleWordId, onlyDue, filter, wordIds, title } =
+    route.params || {};
+  const { state, stats, recordReview, toggleBookmark, words, todayWords, packWords } =
+    useProgress();
 
   // 构建当前复习/学习单词队列
   const studyQueue: Word[] = useMemo(() => {
+    // 今日学习单词 / 子卡组单词列表 (learn-by-menu 拉取的卡片)
+    if (wordIds && wordIds.length) {
+      const pool = new Map<number, Word>();
+      for (const w of todayWords) pool.set(w.id, w);
+      for (const w of packWords) {
+        if (!pool.has(w.id)) pool.set(w.id, w);
+      }
+      for (const w of words) {
+        if (!pool.has(w.id)) pool.set(w.id, w);
+      }
+      const ids: number[] = Array.isArray(wordIds) ? wordIds : [];
+      const queue: Word[] = [];
+      for (const id of ids) {
+        const w = pool.get(id);
+        if (w) queue.push(w);
+      }
+      return queue;
+    }
+
     if (singleWordId) {
-      const single = words.find((w) => w.id === singleWordId);
+      const single =
+        words.find((w) => w.id === singleWordId) ||
+        todayWords.find((w) => w.id === singleWordId) ||
+        packWords.find((w) => w.id === singleWordId);
       return single ? [single] : [];
     }
 
@@ -56,7 +80,18 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
 
       return true;
     });
-  }, [category, subCategory, singleWordId, onlyDue, filter, state.progressMap, words]);
+  }, [
+    category,
+    subCategory,
+    singleWordId,
+    onlyDue,
+    filter,
+    state.progressMap,
+    words,
+    todayWords,
+    packWords,
+    wordIds,
+  ]);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
@@ -173,7 +208,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       
       {/* 顶部导航与进度 */}
       <Header
-        title={category || '背单词'}
+        title={title || category || '背单词'}
         subtitle={`${currentIndex + 1} / ${studyQueue.length}`}
         onBack={() => navigation.goBack()}
         rightAction={{

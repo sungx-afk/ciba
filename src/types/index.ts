@@ -5,6 +5,8 @@ export interface Word {
   word: string;
   meaning: string;
   note: string;
+  /** 远程卡组 id，用于学习结果上报 */
+  packageId?: number;
 }
 
 export type WordStatus = 'unlearned' | 'learning' | 'mastered';

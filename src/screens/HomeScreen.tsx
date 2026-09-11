@@ -1,238 +1,699 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
+  FlatList,
+  Modal,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   SafeAreaView,
   StatusBar,
   Image,
+  ActivityIndicator,
+  RefreshControl,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
+import { packLibrary, RemotePack } from '../services/packLibrary';
+import { Word } from '../types';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { ProgressBar } from '../components/ProgressBar';
+
+/** 分类卡组分页大小 */
+const SUB_PAGE_SIZE = 30;
+/** 今日学习单词一次拉取的数量（与 web 端一致） */
+const TODAY_WORD_LIMIT = 50;
+/** learn-by-menu 的卡片状态过滤：0 未学 / 1 学习中 / 4 已记住 */
+const TODAY_WORD_TYPES = [0, 1, 4];
+/** 今日单词折叠时预览条数 */
+const TODAY_PREVIEW_COUNT = 5;
 
 interface HomeScreenProps {
   navigation: any;
 }
 
-export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
-  const { stats, state, words, categoryList, currentPack, isLoadingWords } = useProgress();
-  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+/** 合并分页数据并按 id 去重 */
+function mergePacks(prev: RemotePack[], next: RemotePack[]): RemotePack[] {
+  const seen = new Set(prev.map((p) => p.id));
+  return [...prev, ...next.filter((p) => !seen.has(p.id))];
+}
 
-  // 计算某个大类的已掌握词数
-  const getCategoryMasteredCount = (catName: string): number => {
-    let count = 0;
-    for (const id in state.progressMap) {
-      const p = state.progressMap[id];
-      if (p.status === 'mastered') {
-        const w = words.find((item) => item.id === Number(id));
-        if (w && w.cat === catName) {
-          count++;
-        }
-      }
-    }
-    return count;
-  };
+export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
+  const {
+    stats,
+    isLoggedIn,
+    currentPack,
+    todayWords,
+    todayWordsTotal,
+    todayWordsPackId,
+    isLoadingTodayWords,
+    loadTodayWords,
+    isLoadingPackWords,
+    packWordsPackId,
+    loadPackWordList,
+    installedPack,
+    setInstalledPack,
+  } = useProgress();
+
+  // 顶部切换: 我的卡组 (/anki/pack.json, parentId = 0)
+  const [topPacks, setTopPacks] = useState<RemotePack[]>([]);
+  const [selectedTop, setSelectedTop] = useState<RemotePack | null>(null);
+  const [loadingPacks, setLoadingPacks] = useState(true);
+
+  // 分类卡组列表 (/anki/pack.json?parentId = 父卡组 id)
+  const [subPacks, setSubPacks] = useState<RemotePack[]>([]);
+  const [subTotal, setSubTotal] = useState(0);
+  const [loadingSubs, setLoadingSubs] = useState(false);
+
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [activeSub, setActiveSub] = useState<RemotePack | null>(null);
+  const [showAllToday, setShowAllToday] = useState(false);
+
+  // 顶部卡组下拉选择
+  const selectorRef = useRef<View>(null);
+  const [dropdownVisible, setDropdownVisible] = useState(false);
+  const [dropdownTop, setDropdownTop] = useState(120);
 
   const todayGoalProgress = Math.min(1, stats.todayLearnedCount / (stats.dailyGoal || 20));
 
-  const handleStartStudy = (category?: string, subCategory?: string) => {
-    navigation.navigate('Flashcard', { category, subCategory });
+  /** 顶部卡组: 我的卡组 */
+  const loadTopPacks = useCallback(async () => {
+    setLoadingPacks(true);
+    setErrorMsg(null);
+    try {
+      const { packs } = await packLibrary.fetchMyPacks({ start: 0, limit: 50 });
+      setTopPacks(packs);
+      setSelectedTop((prev) => {
+        if (prev && packs.some((p) => p.id === prev.id)) return prev;
+        const saved = currentPack ? packs.find((p) => p.id === currentPack.id) : undefined;
+        return saved || packs[0] || null;
+      });
+    } catch (e: any) {
+      setErrorMsg(e?.message || '加载我的卡组失败');
+    } finally {
+      setLoadingPacks(false);
+    }
+  }, [currentPack?.id]);
+
+  /** 某个父卡组下的分类卡组 */
+  const loadSubPacks = useCallback(async (parentId: number, start: number) => {
+    setLoadingSubs(true);
+    try {
+      const { packs, total } = await packLibrary.fetchSubPacks(parentId, {
+        start,
+        limit: SUB_PAGE_SIZE,
+      });
+      setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
+      setSubTotal(total);
+    } catch (e: any) {
+      setErrorMsg(e?.message || '加载分类卡组失败');
+    } finally {
+      setLoadingSubs(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadTopPacks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 登录成功后自动重新加载卡组
+  useEffect(() => {
+    if (isLoggedIn && topPacks.length === 0 && !loadingPacks) {
+      loadTopPacks();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn]);
+
+  // 切换顶部卡组时重新拉取其分类卡组
+  useEffect(() => {
+    if (!selectedTop) return;
+    setSubPacks([]);
+    setSubTotal(0);
+    setActiveSub(null);
+    setShowAllToday(false);
+    loadSubPacks(selectedTop.id, 0);
+  }, [selectedTop?.id, loadSubPacks]);
+
+  const reloadAll = useCallback(async () => {
+    await loadTopPacks();
+    if (selectedTop) {
+      await loadSubPacks(selectedTop.id, 0);
+    }
+  }, [loadTopPacks, loadSubPacks, selectedTop]);
+
+  const handleLoadMore = () => {
+    if (loadingSubs || loadingPacks || !selectedTop) return;
+    if (subPacks.length === 0 || subPacks.length >= subTotal) return;
+    loadSubPacks(selectedTop.id, subPacks.length);
   };
 
-  const handleOpenWordList = (category: string, subCategory?: string) => {
-    navigation.navigate('WordList', { category, subCategory });
+  /** 打开顶部卡组下拉框（面板定位到选择器下方） */
+  const openDropdown = () => {
+    setDropdownVisible(true);
+    selectorRef.current?.measure((_x, _y, _width, height, _pageX, pageY) => {
+      const next = pageY + height + 6;
+      // 测量失败时保持默认值，避免面板跑到屏幕外
+      if (next > 40) setDropdownTop(next);
+    });
   };
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
-      
-      {/* 顶部标题栏 */}
-      <View style={styles.header}>
-        <View style={styles.headerBrand}>
-          <Image
-            source={require('../assets/pinwheel.png')}
-            style={styles.logoImage}
-            resizeMode="contain"
-          />
-          <View>
-            <Text style={styles.brandTitle}>糍粑英语</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('BookSelect')} activeOpacity={0.6}>
-              <Text style={styles.brandSubtitle}>
-                {currentPack ? currentPack.name : 'TOEFL 意群词汇记忆'}
-                <Text style={styles.switchHint}> 切换 ›</Text>
-              </Text>
-            </TouchableOpacity>
-          </View>
+  const handleSelectTopPack = (pack: RemotePack) => {
+    setDropdownVisible(false);
+    if (selectedTop?.id === pack.id) return;
+    setSelectedTop(pack);
+  };
+
+  /** 打开卡组市场 */
+  const handleOpenMarket = () => {
+    if (!isLoggedIn) {
+      promptLogin();
+      return;
+    }
+    navigation.navigate('Market');
+  };
+
+  /** 市场安装完成: 刷新我的卡组并切换到新安装的卡组 */
+  const handleMarketInstalled = useCallback(async () => {
+    if (!installedPack) return;
+    await loadTopPacks();
+    setSelectedTop(installedPack);
+    setInstalledPack(null);
+  }, [installedPack, loadTopPacks, setInstalledPack]);
+
+  useEffect(() => {
+    handleMarketInstalled();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [installedPack]);
+
+  const promptLogin = () => {
+    Alert.alert('需要登录', '请先登录后再使用在线卡组', [
+      { text: '取消', style: 'cancel' },
+      { text: '去登录', onPress: () => navigation.navigate('Login') },
+    ]);
+  };
+
+  /** 确保已加载某个分类卡组的今日学习单词 */
+  const ensureTodayWords = useCallback(
+    async (pack: RemotePack): Promise<Word[]> => {
+      if (todayWordsPackId === pack.id && todayWords.length > 0) {
+        return todayWords;
+      }
+      setActiveSub(pack);
+      setShowAllToday(false);
+      return await loadTodayWords(pack.id, {
+        start: 0,
+        limit: TODAY_WORD_LIMIT,
+        types: TODAY_WORD_TYPES,
+        cat: selectedTop?.name || '',
+        sub: pack.name || '',
+      });
+    },
+    [todayWordsPackId, todayWords, loadTodayWords, selectedTop?.name]
+  );
+
+  /** 点击分类卡组: 拉取今日学习单词列表 */
+  const handleSelectSub = useCallback(
+    async (pack: RemotePack) => {
+      if (!isLoggedIn) {
+        promptLogin();
+        return;
+      }
+      try {
+        const list = await ensureTodayWords(pack);
+        if (!list.length) {
+          Alert.alert('提示', '该分类今日没有待学习的单词，可点击「单词列表」查看全部单词');
+        }
+      } catch (e: any) {
+        Alert.alert('加载失败', e?.message || '获取今日学习单词失败');
+      }
+    },
+    [ensureTodayWords, isLoggedIn]
+  );
+
+  /** 打开某个子卡组的单词列表 */
+  const handleOpenPackWordList = useCallback(
+    async (pack: RemotePack) => {
+      if (!isLoggedIn) {
+        promptLogin();
+        return;
+      }
+      try {
+        const list = await loadPackWordList(pack.id, {
+          cat: selectedTop?.name || '',
+          sub: pack.name || '',
+        });
+        if (!list.length) {
+          Alert.alert('提示', '该分类暂无单词');
+          return;
+        }
+        navigation.navigate('WordList', { source: 'pack', title: pack.name });
+      } catch (e: any) {
+        Alert.alert('加载失败', e?.message || '获取单词列表失败');
+      }
+    },
+    [loadPackWordList, selectedTop?.name, isLoggedIn, navigation]
+  );
+
+  /** 开始背词: 优先用指定分类，其次当前分类，最后取第一个有今日任务的分类 */
+  const handleStartStudy = useCallback(
+    async (pack?: RemotePack) => {
+      if (!isLoggedIn) {
+        promptLogin();
+        return;
+      }
+      const target =
+        pack ||
+        activeSub ||
+        subPacks.find((p) => (p.today_card_count || 0) > 0) ||
+        subPacks[0];
+      if (!target) {
+        Alert.alert('提示', '暂无可学习的分类卡组');
+        return;
+      }
+      try {
+        const list = await ensureTodayWords(target);
+        if (!list.length) {
+          Alert.alert('太棒了', '该分类今日没有待学习的单词');
+          return;
+        }
+        navigation.navigate('Flashcard', {
+          wordIds: list.map((w) => w.id),
+          title: target.name,
+        });
+      } catch (e: any) {
+        Alert.alert('加载失败', e?.message || '获取今日学习单词失败');
+      }
+    },
+    [ensureTodayWords, activeSub, subPacks, isLoggedIn, navigation]
+  );
+
+  const handleOpenTodayList = () => {
+    if (!activeSub || !todayWords.length) return;
+    navigation.navigate('WordList', {
+      source: 'today',
+      title: activeSub.name,
+    });
+  };
+
+  // 今日待学: 选中分类的今日数量，未选中时取已加载分类的合计
+  const todayDue = useMemo(() => {
+    if (activeSub) return activeSub.today_card_count || 0;
+    return subPacks.reduce((sum, p) => sum + (p.today_card_count || 0), 0);
+  }, [activeSub, subPacks]);
+
+  /** 今日学习单词列表 */
+  const renderTodayWords = () => {
+    if (!activeSub) {
+      return (
+        <View style={styles.todayHintWrap}>
+          <Ionicons name="sparkles-outline" size={15} color={Colors.textMuted} />
+          <Text style={styles.todayHintText}>点击分类卡组，获取今日学习单词列表</Text>
+        </View>
+      );
+    }
+
+    // 正在加载，或列表还属于上一个分类卡组时显示 loading
+    const isLoadingThis =
+      isLoadingTodayWords || (!!activeSub && todayWordsPackId !== activeSub.id);
+    const visibleWords = showAllToday ? todayWords : todayWords.slice(0, TODAY_PREVIEW_COUNT);
+
+    return (
+      <View style={styles.todayBlock}>
+        <View style={styles.todayBlockHeader}>
+          <Text style={styles.todayBlockTitle} numberOfLines={1}>
+            今日学习单词 · {activeSub.name}
+          </Text>
+          <Text style={styles.todayBlockCount}>
+            {todayWords.length}/{todayWordsTotal}
+          </Text>
         </View>
 
-        {/* 连续打卡徽章 */}
+        {isLoadingThis ? (
+          <View style={styles.todayLoading}>
+            <ActivityIndicator size="small" color={Colors.primary} />
+            <Text style={styles.todayLoadingText}>正在获取今日学习单词...</Text>
+          </View>
+        ) : todayWords.length === 0 ? (
+          <Text style={styles.todayEmptyText}>该分类今日没有待学习的单词</Text>
+        ) : (
+          <>
+            {visibleWords.map((w) => (
+              <View key={w.id} style={styles.todayWordRow}>
+                <Text style={styles.todayWordText}>{w.word}</Text>
+                <Text style={styles.todayWordMeaning} numberOfLines={1}>
+                  {w.meaning || w.note}
+                </Text>
+              </View>
+            ))}
+
+            {todayWords.length > TODAY_PREVIEW_COUNT ? (
+              <TouchableOpacity
+                style={styles.todayToggle}
+                onPress={() => setShowAllToday((v) => !v)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.todayToggleText}>
+                  {showAllToday ? '收起' : `展开全部 ${todayWords.length} 个单词`}
+                </Text>
+                <Ionicons
+                  name={showAllToday ? 'chevron-up' : 'chevron-down'}
+                  size={14}
+                  color={Colors.primary}
+                />
+              </TouchableOpacity>
+            ) : null}
+
+            <View style={styles.todayActionRow}>
+              <TouchableOpacity
+                style={styles.todayOutlineBtn}
+                onPress={handleOpenTodayList}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="list-outline" size={15} color={Colors.textSecondary} />
+                <Text style={styles.todayOutlineText}>单词列表</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.todayPrimaryBtn}
+                onPress={() => handleStartStudy(activeSub)}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="play" size={15} color="#FFFFFF" />
+                <Text style={styles.todayPrimaryText}>背诵这 {todayWords.length} 个单词</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+      </View>
+    );
+  };
+
+  const renderSubPack = ({ item }: { item: RemotePack }) => {
+    const isActive = activeSub?.id === item.id;
+    const total = item.card_count || 0;
+    const remembered = item.remembered_card_count || 0;
+    const todayCount = item.today_card_count || 0;
+    const progress = total > 0 ? Math.min(1, remembered / total) : 0;
+    const color = getCategoryColor(item.name);
+    const isLoadingList = isLoadingPackWords && packWordsPackId === item.id;
+    const isLoadingToday = isLoadingTodayWords && activeSub?.id === item.id;
+
+    return (
+      <View style={[styles.subCard, isActive && styles.subCardActive]}>
+        {/* 卡片主体：选中该分类并加载今日学习单词 */}
+        <TouchableOpacity
+          style={styles.subCardMain}
+          onPress={() => handleSelectSub(item)}
+          activeOpacity={0.75}
+        >
+          <View style={styles.subCardTop}>
+            <View style={[styles.subColorDot, { backgroundColor: color }]} />
+            <Text style={styles.subCardName} numberOfLines={1}>
+              {item.name}
+            </Text>
+            {isLoadingToday || isLoadingList ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : todayCount > 0 ? (
+              <View style={styles.todayBadge}>
+                <Text style={styles.todayBadgeText}>今日 {todayCount}</Text>
+              </View>
+            ) : null}
+          </View>
+
+          <View style={styles.subMetaRow}>
+            <Text style={styles.subMetaText}>共 {total} 词</Text>
+            <Text style={styles.subMetaText}>已掌握 {remembered}</Text>
+            <Text style={styles.subProgressRatio}>
+              {remembered}/{total}
+            </Text>
+          </View>
+
+          <View style={styles.subProgressWrap}>
+            <ProgressBar progress={progress} height={4} color={color} />
+          </View>
+        </TouchableOpacity>
+
+        {/* 操作区与卡片主体平级，避免嵌套点击冲突 */}
+        <View style={styles.subActions}>
+          <TouchableOpacity
+            style={styles.subOutlineBtn}
+            onPress={() => handleOpenPackWordList(item)}
+            activeOpacity={0.7}
+          >
+            {isLoadingList ? (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            ) : (
+              <Ionicons name="list-outline" size={15} color={Colors.textSecondary} />
+            )}
+            <Text style={styles.subOutlineText}>单词列表</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.subPrimaryBtn, { backgroundColor: color }]}
+            onPress={() => handleStartStudy(item)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="play" size={15} color="#FFFFFF" />
+            <Text style={styles.subPrimaryText}>开始背词</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  const renderListHeader = () => (
+    <View>
+      {/* 顶部标题栏 + 卡组下拉选择 */}
+      <View style={styles.header}>
+        <View ref={selectorRef} collapsable={false} style={styles.headerBrand}>
+          <TouchableOpacity
+            style={styles.brandTouch}
+            onPress={openDropdown}
+            activeOpacity={0.7}
+            disabled={topPacks.length === 0}
+          >
+            <Image
+              source={require('../assets/pinwheel.png')}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
+            <View style={styles.brandTextWrap}>
+              <Text style={styles.brandTitle}>糍粑英语</Text>
+              <View style={styles.selectorPill}>
+                <Text style={styles.selectorPillText} numberOfLines={1}>
+                  {selectedTop ? selectedTop.name : currentPack ? currentPack.name : '选择卡组'}
+                </Text>
+                <Ionicons name="chevron-down" size={13} color={Colors.primary} />
+              </View>
+            </View>
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity style={styles.addButton} onPress={handleOpenMarket} activeOpacity={0.7}>
+          <Ionicons name="add" size={20} color={Colors.primary} />
+        </TouchableOpacity>
+
         <View style={styles.streakBadge}>
           <Ionicons name="flame" size={16} color={Colors.pinwheelRed} />
           <Text style={styles.streakText}>{stats.streakDays} 天</Text>
         </View>
       </View>
 
-      {isLoadingWords ? (
-        <View style={styles.loadingBar}>
-          <Text style={styles.loadingBarText}>正在加载在线词库...</Text>
+      {/* 今日学习看板卡片 */}
+      <View style={styles.dashboardCard}>
+        <View style={styles.dashHeader}>
+          <View style={styles.dashTitleWrap}>
+            <Text style={styles.dashTitle}>今日学习</Text>
+            <Text style={styles.dashSubtitle}>
+              已学 {stats.todayLearnedCount} / 目标 {stats.dailyGoal} 词
+            </Text>
+          </View>
+          <View style={styles.dashGoalPercent}>
+            <Text style={styles.dashPercentText}>{Math.round(todayGoalProgress * 100)}%</Text>
+          </View>
         </View>
-      ) : null}
 
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* 今日学习看板卡片 */}
-        <View style={styles.dashboardCard}>
-          <View style={styles.dashHeader}>
-            <View>
-              <Text style={styles.dashTitle}>今日学习</Text>
-              <Text style={styles.dashSubtitle}>
-                已学 {stats.todayLearnedCount} / 目标 {stats.dailyGoal} 词
-              </Text>
-            </View>
-            <View style={styles.dashGoalPercent}>
-              <Text style={styles.dashPercentText}>
-                {Math.round(todayGoalProgress * 100)}%
-              </Text>
-            </View>
+        <View style={styles.dashProgressTrack}>
+          <ProgressBar progress={todayGoalProgress} height={8} color={Colors.primary} />
+        </View>
+
+        <View style={styles.dashMetricsRow}>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricNumber}>{todayDue}</Text>
+            <Text style={styles.metricLabel}>今日待学</Text>
           </View>
-
-          <View style={styles.dashProgressTrack}>
-            <ProgressBar progress={todayGoalProgress} height={8} color={Colors.primary} />
+          <View style={styles.metricDivider} />
+          <View style={styles.metricItem}>
+            <Text style={styles.metricNumber}>{stats.masteredCount}</Text>
+            <Text style={styles.metricLabel}>已掌握</Text>
           </View>
-
-          <View style={styles.dashMetricsRow}>
-            <View style={styles.metricItem}>
-              <Text style={styles.metricNumber}>{stats.dueTodayCount}</Text>
-              <Text style={styles.metricLabel}>待复习</Text>
-            </View>
-            <View style={styles.metricDivider} />
-            <View style={styles.metricItem}>
-              <Text style={styles.metricNumber}>{stats.masteredCount}</Text>
-              <Text style={styles.metricLabel}>已掌握</Text>
-            </View>
-            <View style={styles.metricDivider} />
-            <View style={styles.metricItem}>
-              <Text style={styles.metricNumber}>{stats.totalWords}</Text>
-              <Text style={styles.metricLabel}>词库总数</Text>
-            </View>
+          <View style={styles.metricDivider} />
+          <View style={styles.metricItem}>
+            <Text style={styles.metricNumber}>{selectedTop?.card_count ?? stats.totalWords}</Text>
+            <Text style={styles.metricLabel}>卡组词数</Text>
           </View>
+        </View>
 
-          {/* 快捷学习操作按钮 */}
-          <View style={styles.dashActionRow}>
+        <View style={styles.dashActionRow}>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.primaryBtn]}
+            onPress={() => handleStartStudy()}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="flash" size={18} color="#FFFFFF" />
+            <Text style={styles.primaryBtnText}>开始背词</Text>
+          </TouchableOpacity>
+
+          {stats.dueTodayCount > 0 ? (
             <TouchableOpacity
-              style={[styles.actionBtn, styles.primaryBtn]}
-              onPress={() => handleStartStudy()}
+              style={[styles.actionBtn, styles.reviewBtn]}
+              onPress={() => navigation.navigate('Flashcard', { onlyDue: true })}
               activeOpacity={0.8}
             >
-              <Ionicons name="flash" size={18} color="#FFFFFF" />
-              <Text style={styles.primaryBtnText}>开始背词</Text>
+              <Ionicons name="repeat" size={18} color={Colors.primary} />
+              <Text style={styles.reviewBtnText}>复习待办 ({stats.dueTodayCount})</Text>
             </TouchableOpacity>
-
-            {stats.dueTodayCount > 0 ? (
-              <TouchableOpacity
-                style={[styles.actionBtn, styles.reviewBtn]}
-                onPress={() => navigation.navigate('Flashcard', { onlyDue: true })}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="repeat" size={18} color={Colors.primary} />
-                <Text style={styles.reviewBtnText}>复习待办 ({stats.dueTodayCount})</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
+          ) : null}
         </View>
 
-        {/* 词库大类列表 */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>分类意群（{categoryList.length} 大类）</Text>
-          <Text style={styles.sectionHint}>按学科意群记忆更高效</Text>
+        {renderTodayWords()}
+      </View>
+
+      {/* 分类卡组标题 */}
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>分类卡组{subTotal ? `（${subTotal}）` : ''}</Text>
+        <Text style={styles.sectionHint}>
+          {selectedTop ? selectedTop.name : ''}
+        </Text>
+      </View>
+    </View>
+  );
+
+  const renderEmpty = () => {
+    if (loadingPacks || loadingSubs) {
+      return (
+        <View style={styles.centerPadding}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.loadingText}>正在加载卡组...</Text>
         </View>
+      );
+    }
+    if (errorMsg) {
+      return (
+        <View style={styles.emptyWrap}>
+          <Ionicons name="cloud-offline-outline" size={48} color={Colors.border} />
+          <Text style={styles.emptyText}>{errorMsg}</Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={reloadAll} activeOpacity={0.8}>
+            <Text style={styles.retryText}>重试</Text>
+          </TouchableOpacity>
+          {!isLoggedIn ? (
+            <TouchableOpacity
+              style={[styles.retryBtn, styles.loginBtn]}
+              onPress={() => navigation.navigate('Login')}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.retryText}>去登录</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      );
+    }
+    return (
+      <View style={styles.emptyWrap}>
+        <Ionicons name="albums-outline" size={48} color={Colors.border} />
+        <Text style={styles.emptyText}>暂无分类卡组</Text>
+      </View>
+    );
+  };
 
-        {categoryList.map((category) => {
-          const isExpanded = expandedCategory === category.name;
-          const catColor = getCategoryColor(category.name);
-          const masteredCount = getCategoryMasteredCount(category.name);
-          const progress = category.wordCount > 0 ? masteredCount / category.wordCount : 0;
-
-          return (
-            <View key={category.name} style={styles.categoryCard}>
-              <TouchableOpacity
-                style={styles.categoryHeaderRow}
-                onPress={() => setExpandedCategory(isExpanded ? null : category.name)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.catTitleLeft}>
-                  <View style={[styles.catColorDot, { backgroundColor: catColor }]} />
-                  <Text style={styles.catName}>{category.name}</Text>
-                  <Text style={styles.catWordCount}>（{category.wordCount} 词）</Text>
-                </View>
-
-                <View style={styles.catHeaderRight}>
-                  <Text style={styles.catProgressRatio}>
-                    {masteredCount}/{category.wordCount}
-                  </Text>
-                  <Ionicons
-                    name={isExpanded ? 'chevron-up' : 'chevron-down'}
-                    size={20}
-                    color={Colors.textMuted}
-                  />
-                </View>
-              </TouchableOpacity>
-
-              {/* 大类进度条 */}
-              <View style={styles.catProgressBarWrap}>
-                <ProgressBar progress={progress} height={4} color={catColor} />
+  /** 顶部卡组下拉弹层 */
+  const renderDropdown = () => (
+    <Modal
+      visible={dropdownVisible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={() => setDropdownVisible(false)}
+    >
+      <TouchableWithoutFeedback onPress={() => setDropdownVisible(false)}>
+        <View style={styles.dropdownOverlay}>
+          <TouchableWithoutFeedback>
+            <View style={[styles.dropdownPanel, { top: dropdownTop }]}>
+              <View style={styles.dropdownHeader}>
+                <Text style={styles.dropdownTitle}>我的卡组</Text>
+                <Text style={styles.dropdownSubtitle}>{topPacks.length} 个分类词库</Text>
               </View>
 
-              {/* 展开后的意群与操作 */}
-              {isExpanded ? (
-                <View style={styles.expandedContent}>
-                  <View style={styles.subCatGrid}>
-                    {category.subCategories.map((sub) => (
-                      <TouchableOpacity
-                        key={sub.name}
-                        style={styles.subCatChip}
-                        onPress={() => handleOpenWordList(category.name, sub.name)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={styles.subCatName}>{sub.name || '核心意群'}</Text>
-                        <Text style={styles.subCatCount}>{sub.wordCount}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <View style={styles.categoryActions}>
+              <FlatList
+                data={topPacks}
+                keyExtractor={(item) => String(item.id)}
+                style={styles.dropdownList}
+                renderItem={({ item }) => {
+                  const isActive = selectedTop?.id === item.id;
+                  const color = getCategoryColor(item.name);
+                  return (
                     <TouchableOpacity
-                      style={styles.catActionOutlineBtn}
-                      onPress={() => handleOpenWordList(category.name)}
+                      style={[styles.dropdownItem, isActive && styles.dropdownItemActive]}
+                      onPress={() => handleSelectTopPack(item)}
                       activeOpacity={0.7}
                     >
-                      <Ionicons name="list-outline" size={16} color={Colors.textPrimary} />
-                      <Text style={styles.catActionOutlineText}>查看全部单词</Text>
+                      <View style={[styles.dropdownDot, { backgroundColor: color }]} />
+                      <View style={styles.dropdownTextWrap}>
+                        <Text
+                          style={[styles.dropdownItemName, isActive && styles.dropdownItemNameActive]}
+                          numberOfLines={1}
+                        >
+                          {item.name}
+                        </Text>
+                        <Text style={styles.dropdownItemMeta}>
+                          {item.card_count || 0} 词 · 今日待学 {item.today_card_count || 0}
+                        </Text>
+                      </View>
+                      {isActive ? (
+                        <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />
+                      ) : (
+                        <Ionicons name="chevron-forward" size={15} color={Colors.textMuted} />
+                      )}
                     </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.catActionPrimaryBtn, { backgroundColor: catColor }]}
-                      onPress={() => handleStartStudy(category.name)}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="play" size={16} color="#FFFFFF" />
-                      <Text style={styles.catActionPrimaryText}>学习此分类</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ) : null}
+                  );
+                }}
+                ItemSeparatorComponent={() => <View style={styles.dropdownDivider} />}
+              />
             </View>
-          );
-        })}
-      </ScrollView>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
+
+      {renderDropdown()}
+
+      <FlatList
+        data={subPacks}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={renderSubPack}
+        ListHeaderComponent={renderListHeader}
+        ListEmptyComponent={renderEmpty}
+        ListFooterComponent={
+          loadingSubs && subPacks.length > 0 ? (
+            <View style={styles.footerLoading}>
+              <ActivityIndicator size="small" color={Colors.primary} />
+            </View>
+          ) : null
+        }
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.4}
+        refreshControl={
+          <RefreshControl refreshing={loadingPacks} onRefresh={reloadAll} colors={[Colors.primary]} />
+        }
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+      />
     </SafeAreaView>
   );
 };
@@ -241,6 +702,9 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  listContent: {
+    paddingBottom: 40,
   },
   header: {
     flexDirection: 'row',
@@ -253,8 +717,15 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.border,
   },
   headerBrand: {
+    flex: 1,
+    marginRight: 8,
+  },
+  brandTouch: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  brandTextWrap: {
+    flex: 1,
   },
   logoImage: {
     width: 38,
@@ -267,24 +738,37 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     letterSpacing: 0.5,
   },
-  brandSubtitle: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-  },
-  switchHint: {
-    fontSize: 11,
-    color: Colors.primary,
-    fontWeight: '600',
-  },
-  loadingBar: {
-    backgroundColor: Colors.primaryLight,
-    paddingVertical: 6,
+  // 下拉选择器（胶囊样式）
+  selectorPill: {
+    flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    marginTop: 3,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 12,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primary + '33',
+    gap: 3,
   },
-  loadingBarText: {
+  selectorPillText: {
     fontSize: 12,
-    color: Colors.primary,
     fontWeight: '600',
+    color: Colors.primary,
+    flexShrink: 1,
+  },
+  addButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primary + '33',
   },
   streakBadge: {
     flexDirection: 'row',
@@ -300,12 +784,87 @@ const styles = StyleSheet.create({
     color: Colors.pinwheelRed,
     marginLeft: 4,
   },
-  scrollView: {
+
+  // 顶部卡组下拉弹层
+  dropdownOverlay: {
     flex: 1,
+    backgroundColor: 'rgba(31, 26, 18, 0.28)',
   },
-  scrollContent: {
-    paddingBottom: 40,
+  dropdownPanel: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    backgroundColor: Colors.card,
+    borderRadius: 16,
+    paddingTop: 4,
+    paddingBottom: 6,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.14,
+    shadowRadius: 18,
+    elevation: 8,
   },
+  dropdownHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  dropdownTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: Colors.textPrimary,
+  },
+  dropdownSubtitle: {
+    fontSize: 12,
+    color: Colors.textMuted,
+  },
+  dropdownList: {
+    maxHeight: 320,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  dropdownItemActive: {
+    backgroundColor: Colors.primaryLight,
+  },
+  dropdownDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 10,
+  },
+  dropdownTextWrap: {
+    flex: 1,
+    marginRight: 8,
+  },
+  dropdownItemName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  dropdownItemNameActive: {
+    fontWeight: '800',
+    color: Colors.primary,
+  },
+  dropdownItemMeta: {
+    fontSize: 11,
+    color: Colors.textMuted,
+    marginTop: 3,
+  },
+  dropdownDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: Colors.divider,
+    marginLeft: 32,
+  },
+
+  // 今日学习看板
   dashboardCard: {
     backgroundColor: Colors.card,
     borderRadius: 18,
@@ -323,6 +882,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  dashTitleWrap: {
+    flex: 1,
+    marginRight: 8,
   },
   dashTitle: {
     fontSize: 18,
@@ -405,12 +968,139 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+
+  // 今日学习单词列表
+  todayHintWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
+    gap: 6,
+  },
+  todayHintText: {
+    fontSize: 12,
+    color: Colors.textMuted,
+  },
+  todayBlock: {
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
+  },
+  todayBlockHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  todayBlockTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginRight: 8,
+  },
+  todayBlockCount: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  todayLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    gap: 8,
+  },
+  todayLoadingText: {
+    fontSize: 12,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
+  todayEmptyText: {
+    fontSize: 13,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    paddingVertical: 14,
+  },
+  todayWordRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.divider,
+  },
+  todayWordText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    width: 110,
+    marginRight: 10,
+  },
+  todayWordMeaning: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.textSecondary,
+  },
+  todayToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    gap: 4,
+  },
+  todayToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  todayActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  todayOutlineBtn: {
+    flex: 1,
+    height: 38,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  todayOutlineText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  todayPrimaryBtn: {
+    flex: 1,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: Colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  todayPrimaryText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+
+  // 分类卡组
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'baseline',
     paddingHorizontal: 20,
-    marginTop: 12,
+    marginTop: 4,
     marginBottom: 8,
   },
   sectionTitle: {
@@ -421,90 +1111,81 @@ const styles = StyleSheet.create({
   sectionHint: {
     fontSize: 12,
     color: Colors.textMuted,
+    flex: 1,
+    textAlign: 'right',
+    marginLeft: 8,
   },
-  categoryCard: {
+  subCard: {
     backgroundColor: Colors.card,
     borderRadius: 14,
     marginHorizontal: 16,
     marginVertical: 6,
-    padding: 16,
+    padding: 14,
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  categoryHeaderRow: {
+  subCardActive: {
+    borderColor: Colors.primary,
+    borderWidth: 2,
+  },
+  subCardMain: {
+    paddingBottom: 2,
+  },
+  subCardTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
   },
-  catTitleLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  catColorDot: {
+  subColorDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
     marginRight: 8,
   },
-  catName: {
-    fontSize: 16,
+  subCardName: {
+    flex: 1,
+    fontSize: 15,
     fontWeight: '700',
     color: Colors.textPrimary,
+    marginRight: 8,
   },
-  catWordCount: {
-    fontSize: 13,
-    color: Colors.textMuted,
+  todayBadge: {
+    backgroundColor: Colors.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
-  catHeaderRight: {
+  todayBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.primary,
+  },
+  subMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    marginTop: 8,
+    gap: 16,
   },
-  catProgressRatio: {
-    fontSize: 13,
+  subMetaText: {
+    fontSize: 12,
+    color: Colors.textMuted,
+  },
+  subProgressRatio: {
+    marginLeft: 'auto',
+    fontSize: 12,
     fontWeight: '600',
     color: Colors.textSecondary,
   },
-  catProgressBarWrap: {
-    marginTop: 10,
+  subProgressWrap: {
+    marginTop: 8,
   },
-  expandedContent: {
-    marginTop: 14,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.divider,
-  },
-  subCatGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  subCatChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.divider,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    gap: 6,
-  },
-  subCatName: {
-    fontSize: 13,
-    color: Colors.textPrimary,
-  },
-  subCatCount: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    fontWeight: '600',
-  },
-  categoryActions: {
+  subActions: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 14,
+    marginTop: 12,
   },
-  catActionOutlineBtn: {
+  subOutlineBtn: {
     flex: 1,
-    height: 38,
+    height: 36,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -513,23 +1194,64 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
   },
-  catActionOutlineText: {
+  subOutlineText: {
     fontSize: 13,
     fontWeight: '600',
     color: Colors.textPrimary,
   },
-  catActionPrimaryBtn: {
+  subPrimaryBtn: {
     flex: 1,
-    height: 38,
+    height: 36,
     borderRadius: 8,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
-  catActionPrimaryText: {
+  subPrimaryText: {
     fontSize: 13,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+
+  // 空态 / 加载
+  centerPadding: {
+    paddingTop: 60,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 13,
+    color: Colors.textSecondary,
+  },
+  emptyWrap: {
+    alignItems: 'center',
+    paddingTop: 40,
+    paddingHorizontal: 30,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: Colors.textMuted,
+    marginTop: 12,
+    textAlign: 'center',
+  },
+  retryBtn: {
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    backgroundColor: Colors.primary,
+    borderRadius: 8,
+  },
+  loginBtn: {
+    backgroundColor: Colors.pinwheelBlue,
+  },
+  retryText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  footerLoading: {
+    paddingVertical: 20,
+    alignItems: 'center',
   },
 });

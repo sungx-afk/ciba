@@ -81,6 +81,30 @@ interface ProgressContextValue {
   loadPackWords: (pack: RemotePack) => Promise<void>;
   revertToLocal: () => void;
 
+  // 今日学习单词 (来自 /anki/pack/{id}/learn-by-menu.json)
+  todayWords: Word[];
+  todayWordsTotal: number;
+  todayWordsPackId: number | null;
+  isLoadingTodayWords: boolean;
+  loadTodayWords: (
+    packId: number,
+    options?: { start?: number; limit?: number; types?: number[]; cat?: string; sub?: string }
+  ) => Promise<Word[]>;
+  clearTodayWords: () => void;
+
+  // 子卡组单词列表 (来自 /anki/pack/{id}/learn-by-menu.json，不带 type 过滤)
+  packWords: Word[];
+  packWordsPackId: number | null;
+  isLoadingPackWords: boolean;
+  loadPackWordList: (
+    packId: number,
+    options?: { cat?: string; sub?: string }
+  ) => Promise<Word[]>;
+
+  // 从市场安装成功的卡组（供分类页刷新我的卡组并切换到该卡组）
+  installedPack: RemotePack | null;
+  setInstalledPack: (pack: RemotePack | null) => void;
+
   // 认证
   user: RemoteUser | null;
   isLoggedIn: boolean;
@@ -99,6 +123,20 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [isLoadingWords, setIsLoadingWords] = useState(false);
   const [wordSource, setWordSource] = useState<'local' | 'remote'>('local');
   const [currentPack, setCurrentPack] = useState<CurrentPack | null>(null);
+
+  // 今日学习单词
+  const [todayWords, setTodayWords] = useState<Word[]>([]);
+  const [todayWordsTotal, setTodayWordsTotal] = useState(0);
+  const [todayWordsPackId, setTodayWordsPackId] = useState<number | null>(null);
+  const [isLoadingTodayWords, setIsLoadingTodayWords] = useState(false);
+
+  // 子卡组单词列表
+  const [packWords, setPackWords] = useState<Word[]>([]);
+  const [packWordsPackId, setPackWordsPackId] = useState<number | null>(null);
+  const [isLoadingPackWords, setIsLoadingPackWords] = useState(false);
+
+  // 市场安装成功的卡组
+  const [installedPack, setInstalledPack] = useState<RemotePack | null>(null);
 
   // 认证
   const [user, setUser] = useState<RemoteUser | null>(null);
@@ -264,9 +302,15 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     await saveState(newState);
 
     // 异步上报学习结果到服务端 (type: 0=重来 1=困难 2=一般 3=容易)
-    if (currentPack) {
+    // 优先使用单词所属卡组 id (learn-by-menu 返回的 package_id)
+    const target =
+      words.find((w) => w.id === wordId) ||
+      todayWords.find((w) => w.id === wordId) ||
+      packWords.find((w) => w.id === wordId);
+    const packId = target?.packageId || currentPack?.id;
+    if (packId) {
       const typeMap = { again: 0, hard: 1, good: 2, easy: 3 };
-      packLibrary.markNoteRead(currentPack.id, wordId, typeMap[grade]);
+      packLibrary.markNoteRead(packId, wordId, typeMap[grade]);
     }
   };
 
@@ -335,8 +379,85 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setWords(localWords);
     setWordSource('local');
     setCurrentPack(null);
+    setTodayWords([]);
+    setTodayWordsTotal(0);
+    setTodayWordsPackId(null);
     AsyncStorage.removeItem(PACK_KEY);
   }, []);
+
+  /**
+   * 拉取某个卡组的今日学习单词列表
+   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=50&type=0&type=1&type=4
+   */
+  const loadTodayWords = useCallback(
+    async (
+      packId: number,
+      options: {
+        start?: number;
+        limit?: number;
+        types?: number[];
+        cat?: string;
+        sub?: string;
+      } = {}
+    ): Promise<Word[]> => {
+      setIsLoadingTodayWords(true);
+      try {
+        const { words: list, total } = await packLibrary.fetchTodayWords(packId, options);
+        setTodayWords(list);
+        setTodayWordsTotal(total);
+        setTodayWordsPackId(packId);
+        return list;
+      } finally {
+        setIsLoadingTodayWords(false);
+      }
+    },
+    []
+  );
+
+  const clearTodayWords = useCallback(() => {
+    setTodayWords([]);
+    setTodayWordsTotal(0);
+    setTodayWordsPackId(null);
+  }, []);
+
+  /**
+   * 拉取某个子卡组的全部单词列表（分页合并，最多 5 页 / 500 词）
+   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=100
+   */
+  const loadPackWordList = useCallback(
+    async (packId: number, options: { cat?: string; sub?: string } = {}): Promise<Word[]> => {
+      setIsLoadingPackWords(true);
+      try {
+        const collected: Word[] = [];
+        const seen = new Set<number>();
+        const pageSize = 100;
+        let start = 0;
+
+        for (let page = 0; page < 5; page++) {
+          const { words: list, total } = await packLibrary.fetchPackWords(packId, {
+            ...options,
+            start,
+            limit: pageSize,
+          });
+          for (const w of list) {
+            if (!seen.has(w.id)) {
+              seen.add(w.id);
+              collected.push(w);
+            }
+          }
+          if (list.length === 0 || start + list.length >= total) break;
+          start += list.length;
+        }
+
+        setPackWords(collected);
+        setPackWordsPackId(packId);
+        return collected;
+      } finally {
+        setIsLoadingPackWords(false);
+      }
+    },
+    []
+  );
 
   // 认证
   const login = useCallback(async (loginName: string, password: string) => {
@@ -400,6 +521,18 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     currentPack,
     loadPackWords,
     revertToLocal,
+    todayWords,
+    todayWordsTotal,
+    todayWordsPackId,
+    isLoadingTodayWords,
+    loadTodayWords,
+    clearTodayWords,
+    packWords,
+    packWordsPackId,
+    isLoadingPackWords,
+    loadPackWordList,
+    installedPack,
+    setInstalledPack,
     user,
     isLoggedIn: !!user,
     login,

@@ -22,21 +22,23 @@ interface WordListScreenProps {
 type FilterType = 'all' | 'unlearned' | 'mastered' | 'bookmarked';
 
 export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigation }) => {
-  const { category, subCategory } = route.params || {};
-  const { state, toggleBookmark, words } = useProgress();
+  const { category, subCategory, source, title: routeTitle } = route.params || {};
+  const { state, toggleBookmark, words, todayWords, packWords } = useProgress();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
-  const title = subCategory ? `${category} · ${subCategory}` : category || '全部单词';
+  const title =
+    routeTitle || (subCategory ? `${category} · ${subCategory}` : category || '全部单词');
 
-  // 基础词汇池
+  // 基础词汇池：source = 'today' 今日学习单词；'pack' 子卡组单词列表；默认全部词库
   const baseWords = useMemo(() => {
-    return words.filter((w) => {
+    const pool = source === 'today' ? todayWords : source === 'pack' ? packWords : words;
+    return pool.filter((w) => {
       if (category && w.cat !== category) return false;
       if (subCategory && w.sub !== subCategory) return false;
       return true;
     });
-  }, [category, subCategory, words]);
+  }, [category, subCategory, words, todayWords, packWords, source]);
 
   // 过滤逻辑
   const filteredWords = useMemo(() => {
@@ -64,6 +66,13 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
   }, [baseWords, state.progressMap, activeFilter, searchQuery]);
 
   const handleStartStudy = () => {
+    if (source === 'today' || source === 'pack') {
+      navigation.navigate('Flashcard', {
+        wordIds: filteredWords.map((w) => w.id),
+        title,
+      });
+      return;
+    }
     navigation.navigate('Flashcard', {
       category,
       subCategory,

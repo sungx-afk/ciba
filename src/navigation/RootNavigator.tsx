@@ -12,6 +12,7 @@ import { ProfileScreen } from '../screens/ProfileScreen';
 import { WordListScreen } from '../screens/WordListScreen';
 import { FlashcardScreen } from '../screens/FlashcardScreen';
 import { BookSelectScreen } from '../screens/BookSelectScreen';
+import { MarketScreen } from '../screens/MarketScreen';
 import { PurchaseScreen } from '../screens/PurchaseScreen';
 import { WebPageScreen } from '../screens/WebPageScreen';
 
@@ -103,6 +104,7 @@ export function RootNavigator() {
           options={{ animation: 'slide_from_bottom' }}
         />
         <Stack.Screen name="BookSelect" component={BookSelectScreen} />
+        <Stack.Screen name="Market" component={MarketScreen} />
         <Stack.Screen
           name="Purchase"
           component={PurchaseScreen}
