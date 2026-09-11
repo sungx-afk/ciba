@@ -79,9 +79,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
             <Ionicons name={isLoggedIn ? 'person' : 'log-in-outline'} size={32} color={Colors.primary} />
           </View>
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>
-              {isLoggedIn ? user?.nickname || user?.loginName || '糍粑用户' : '未登录'}
-            </Text>
+            <View style={styles.userNameRow}>
+              <Text style={styles.userName} numberOfLines={1}>
+                {isLoggedIn ? user?.nickname || user?.loginName || '糍粑用户' : '未登录'}
+              </Text>
+              <TouchableOpacity
+                style={styles.vipButton}
+                onPress={() => navigation.navigate('Purchase')}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
+                <Text style={styles.vipButtonText}>升级会员</Text>
+              </TouchableOpacity>
+            </View>
             <Text style={styles.userSub}>
               {isLoggedIn
                 ? `已同步 · ${wordSource === 'remote' ? `词库: ${currentPack?.name || '在线'}` : '本地词库'}`
@@ -283,10 +293,32 @@ const styles = StyleSheet.create({
   userInfo: {
     flex: 1,
   },
+  userNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   userName: {
     fontSize: 18,
     fontWeight: '800',
     color: Colors.textPrimary,
+    flexShrink: 1,
+  },
+  vipButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  vipButtonText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.primary,
+    marginLeft: 2,
   },
   userSub: {
     fontSize: 12,

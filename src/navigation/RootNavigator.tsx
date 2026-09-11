@@ -13,6 +13,7 @@ import { WordListScreen } from '../screens/WordListScreen';
 import { FlashcardScreen } from '../screens/FlashcardScreen';
 import { LoginScreen } from '../screens/LoginScreen';
 import { BookSelectScreen } from '../screens/BookSelectScreen';
+import { PurchaseScreen } from '../screens/PurchaseScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -105,6 +106,11 @@ export function RootNavigator() {
           options={{ animation: 'slide_from_bottom' }}
         />
         <Stack.Screen name="BookSelect" component={BookSelectScreen} />
+        <Stack.Screen
+          name="Purchase"
+          component={PurchaseScreen}
+          options={{ animation: 'slide_from_bottom' }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );
