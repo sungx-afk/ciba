@@ -3,18 +3,21 @@ import { StyleSheet, View, Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { ProgressProvider } from './src/storage/progressStore';
+import { AuthProvider } from './src/context/AuthContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { Colors } from './src/theme/colors';
 
 export default function App() {
   return (
     <SafeAreaProvider>
-      <ProgressProvider>
-        <StatusBar style="dark" />
-        <View style={styles.appContainer}>
-          <RootNavigator />
-        </View>
-      </ProgressProvider>
+      <AuthProvider>
+        <ProgressProvider>
+          <StatusBar style="dark" />
+          <View style={styles.appContainer}>
+            <RootNavigator />
+          </View>
+        </ProgressProvider>
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
