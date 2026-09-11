@@ -2,7 +2,7 @@
   "expo": {
     "name": "糍粑英语",
     "slug": "ciba-english",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./src/assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,7 +15,13 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cibaenglish.app",
-      "buildNumber": "6"
+      "buildNumber": "7",
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": [
+          "weixin",
+          "weixinULAPI"
+        ]
+      }
     },
     "android": {
       "package": "com.cibaenglish.app",
@@ -30,7 +36,8 @@
     },
     "plugins": [
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      "expo-apple-authentication"
     ]
   }
 }

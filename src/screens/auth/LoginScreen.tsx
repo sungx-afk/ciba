@@ -149,18 +149,30 @@ export const LoginScreen: React.FC = () => {
 
     setSocialLoading(true);
     try {
-      // 真实检测当前设备是否安装了微信客户端
-      const canOpen = await Linking.canOpenURL('weixin://');
+      // 真实检测当前设备是否安装了微信客户端（已在 Info.plist 配置白名单）
+      let canOpen = false;
+      try {
+        canOpen = await Linking.canOpenURL('weixin://');
+      } catch (checkErr) {
+        console.warn('canOpenURL weixin failed:', checkErr);
+      }
+
       if (!canOpen) {
-        Alert.alert(
-          '未检测到微信',
-          '您的设备尚未安装微信客户端。推荐使用手机验证码一键登录，无需密码，安全便捷。',
-          [
-            { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
-            { text: '知道了', style: 'cancel' },
-          ]
-        );
-        return;
+        // 尝试直接 openURL 避免部分机型策略限制
+        try {
+          await Linking.openURL('weixin://');
+          return;
+        } catch {
+          Alert.alert(
+            '未检测到微信',
+            '您的设备尚未安装微信客户端，或当前系统未授权跳转。推荐使用手机验证码一键登录，无需密码，安全便捷。',
+            [
+              { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
+              { text: '知道了', style: 'cancel' },
+            ]
+          );
+          return;
+        }
       }
 
       // 真正唤起微信客户端
@@ -175,7 +187,14 @@ export const LoginScreen: React.FC = () => {
         ]
       );
     } catch (err: any) {
-      Alert.alert('唤起微信异常', err.message || '无法打开微信客户端，请直接使用手机验证码登录。');
+      Alert.alert(
+        '唤起微信提示',
+        '未能打开微信客户端，推荐直接使用手机号验证码一键登录。',
+        [
+          { text: '使用手机号登录', onPress: () => setActiveTab('mobile') },
+          { text: '知道了', style: 'cancel' },
+        ]
+      );
     } finally {
       setSocialLoading(false);
     }
@@ -192,11 +211,25 @@ export const LoginScreen: React.FC = () => {
     try {
       const isAvailable = await AppleAuthentication.isAvailableAsync();
       if (!isAvailable) {
-        Alert.alert('提示', '当前设备或系统环境不支持通过 Apple 登录，建议使用手机号验证码一键登录');
+        Alert.alert(
+          '提示',
+          '当前设备或系统环境不支持通过 Apple 登录，建议使用手机号验证码一键登录',
+          [
+            { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
+            { text: '知道了', style: 'cancel' },
+          ]
+        );
         return;
       }
     } catch {
-      Alert.alert('提示', '当前系统不支持 Apple 授权登录，建议使用手机验证码登录');
+      Alert.alert(
+        '提示',
+        '当前系统不支持 Apple 授权登录，建议使用手机验证码登录',
+        [
+          { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
+          { text: '知道了', style: 'cancel' },
+        ]
+      );
       return;
     }
 
@@ -237,7 +270,24 @@ export const LoginScreen: React.FC = () => {
         // 用户主动关闭或取消了 Apple 登录弹窗，无需提示报错
         return;
       }
-      Alert.alert('登录失败', err.message || '调起 Apple 授权异常，请使用手机号验证码登录');
+      const errMsg = err?.message || '';
+      // 针对 ASAuthorizationError / unknown reason (缺少 Entitlement 或 Apple 开发者后台未启用 Capability)
+      if (
+        errMsg.includes('unknown reason') ||
+        errMsg.includes('ASAuthorizationError') ||
+        err?.code === 'ERR_UNAVAILABLE'
+      ) {
+        Alert.alert(
+          'Apple 登录提示',
+          '当前安装包签名环境未分配 Apple 登录权限或暂不可用，建议直接使用手机号验证码一键登录。',
+          [
+            { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
+            { text: '知道了', style: 'cancel' },
+          ]
+        );
+      } else {
+        Alert.alert('登录失败', errMsg || '调起 Apple 授权异常，请使用手机号验证码登录');
+      }
     } finally {
       setSocialLoading(false);
     }
@@ -502,23 +552,16 @@ export const LoginScreen: React.FC = () => {
                 )}
               </TouchableOpacity>
 
-              {/* Apple 登录 */}
-              <TouchableOpacity
-                style={[styles.socialCircleBtn, styles.appleBg]}
-                onPress={handleAppleLogin}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="logo-apple" size={24} color="#FFFFFF" />
-              </TouchableOpacity>
-
-              {/* 邮箱登录 */}
-              <TouchableOpacity
-                style={[styles.socialCircleBtn, styles.emailBg]}
-                onPress={() => navigation.navigate('Register')}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="mail" size={22} color="#FFFFFF" />
-              </TouchableOpacity>
+              {/* Apple 登录 (仅在 iOS 系统显示) */}
+              {Platform.OS === 'ios' && (
+                <TouchableOpacity
+                  style={[styles.socialCircleBtn, styles.appleBg]}
+                  onPress={handleAppleLogin}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="logo-apple" size={24} color="#FFFFFF" />
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* 底部保障与安心说明 */}
