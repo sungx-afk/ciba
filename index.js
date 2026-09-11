@@ -11,7 +11,10 @@ import {
   StyleSheet,
   SafeAreaView,
   Platform,
+  Share,
+  Alert,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { registerRootComponent } from 'expo';
 import App from './App';
@@ -73,6 +76,23 @@ class SafeAppLauncher extends Component {
     }
   };
 
+  handleCopyReport = async () => {
+    try {
+      const text = `=== 糍粑英语致命异常诊断报告 ===\n时间: ${new Date().toLocaleString()}\n错误信息:\n${this.state.errorMessage}\n\n错误堆栈:\n${this.state.errorStack}`;
+      await Clipboard.setStringAsync(text);
+      Alert.alert('已复制', '异常诊断报告已复制到剪贴板，可直接粘贴！');
+    } catch (_) {
+      Alert.alert('提示', '长按屏幕文本也可直接选择复制');
+    }
+  };
+
+  handleShareReport = async () => {
+    try {
+      const text = `=== 糍粑英语致命异常诊断报告 ===\n时间: ${new Date().toLocaleString()}\n错误信息:\n${this.state.errorMessage}\n\n错误堆栈:\n${this.state.errorStack}`;
+      await Share.share({ title: '糍粑英语启动异常', message: text });
+    } catch (_) {}
+  };
+
   render() {
     if (this.state.hasError) {
       return (
@@ -84,13 +104,22 @@ class SafeAppLauncher extends Component {
               以下是阻碍正常显示的详细错误信息：
             </Text>
 
+            <View style={styles.actionBtnRow}>
+              <TouchableOpacity style={styles.copyBtn} onPress={this.handleCopyReport} activeOpacity={0.8}>
+                <Text style={styles.copyBtnText}>📋 一键复制诊断报告</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.shareBtn} onPress={this.handleShareReport} activeOpacity={0.8}>
+                <Text style={styles.shareBtnText}>📤 系统分享</Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.msgBox}>
-              <Text style={styles.msgText}>{this.state.errorMessage}</Text>
+              <Text style={styles.msgText} selectable={true}>{this.state.errorMessage}</Text>
             </View>
 
             {this.state.errorStack ? (
               <ScrollView style={styles.stackBox}>
-                <Text style={styles.stackText}>{this.state.errorStack}</Text>
+                <Text style={styles.stackText} selectable={true}>{this.state.errorStack}</Text>
               </ScrollView>
             ) : null}
 

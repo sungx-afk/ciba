@@ -8,7 +8,10 @@ import {
   SafeAreaView,
   Modal,
   ScrollView,
+  Share,
+  Alert,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -67,6 +70,36 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
     }
   };
 
+  generateReportText = (): string => {
+    const errorMsg = this.state.error?.message || '未知错误';
+    const stack = this.state.error?.stack || '无堆栈';
+    const compStack = this.state.componentStack || '无组件栈';
+    const logs = getBootLogs()
+      .map((l) => `[${l.time}][${l.tag}][${l.level.toUpperCase()}] ${l.message}`)
+      .join('\n');
+    return `=== 糍粑英语异常诊断报告 ===\n时间: ${new Date().toLocaleString()}\n平台: ${Platform.OS}\n\n【错误信息】\n${errorMsg}\n\n【错误调用堆栈】\n${stack}\n\n【故障组件位置】\n${compStack}\n\n【启动日志流】\n${logs}`;
+  };
+
+  handleCopyReport = async () => {
+    try {
+      const text = this.generateReportText();
+      await Clipboard.setStringAsync(text);
+      Alert.alert('复制成功', '完整诊断信息已成功复制到剪贴板，可直接粘贴发送给开发人员！');
+    } catch (e: any) {
+      Alert.alert('复制提示', '长按屏幕下方的堆栈文字也可直接全选复制。');
+    }
+  };
+
+  handleShareReport = async () => {
+    try {
+      const text = this.generateReportText();
+      await Share.share({
+        title: '糍粑英语启动异常诊断报告',
+        message: text,
+      });
+    } catch (_) {}
+  };
+
   render() {
     if (this.state.hasError) {
       const errorMsg = this.state.error?.message || '未知错误，已为您拦截保护';
@@ -78,16 +111,31 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
           <ScrollView style={styles.errorScroll} contentContainerStyle={styles.errorScrollContent}>
             <Text style={styles.errorEmoji}>⚠️</Text>
             <Text style={styles.errorTitle}>启动遇到轻微异常</Text>
+
+            {/* 操作按钮区：最上方醒目提供一键复制与系统分享 */}
+            <View style={styles.actionBtnRow}>
+              <TouchableOpacity style={styles.btnCopy} onPress={this.handleCopyReport} activeOpacity={0.8}>
+                <Text style={styles.btnCopyText}>📋 一键复制诊断报告</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.btnShare} onPress={this.handleShareReport} activeOpacity={0.8}>
+                <Text style={styles.btnShareText}>📤 发送/系统分享</Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.errorMsgCard}>
-              <Text style={styles.errorMsgCardTitle}>错误信息：</Text>
-              <Text style={styles.errorMsgCardContent}>{errorMsg}</Text>
+              <Text style={styles.errorMsgCardTitle}>错误信息 (可长按选择)：</Text>
+              <Text style={styles.errorMsgCardContent} selectable={true}>
+                {errorMsg}
+              </Text>
             </View>
 
             {stack ? (
               <View style={styles.errorStackCard}>
-                <Text style={styles.errorStackCardTitle}>错误调用堆栈 (Stack Trace)：</Text>
+                <Text style={styles.errorStackCardTitle}>错误调用堆栈 (可长按选择复制)：</Text>
                 <ScrollView style={styles.errorStackScroll} nestedScrollEnabled>
-                  <Text style={styles.errorStackText}>{stack}</Text>
+                  <Text style={styles.errorStackText} selectable={true}>
+                    {stack}
+                  </Text>
                 </ScrollView>
               </View>
             ) : null}
@@ -96,7 +144,9 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
               <View style={styles.errorStackCard}>
                 <Text style={styles.errorStackCardTitle}>故障组件位置 (Component Stack)：</Text>
                 <ScrollView style={styles.errorStackScroll} nestedScrollEnabled>
-                  <Text style={styles.errorStackText}>{compStack}</Text>
+                  <Text style={styles.errorStackText} selectable={true}>
+                    {compStack}
+                  </Text>
                 </ScrollView>
               </View>
             ) : null}
@@ -369,6 +419,40 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: Colors.textPrimary,
     marginBottom: 14,
+  },
+  actionBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+    marginBottom: 14,
+  },
+  btnCopy: {
+    flex: 1,
+    backgroundColor: Colors.primary,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnCopyText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  btnShare: {
+    flex: 1,
+    backgroundColor: '#333333',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnShareText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
   },
   errorMsgCard: {
     backgroundColor: '#FFF0F0',

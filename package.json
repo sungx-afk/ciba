@@ -1,6 +1,6 @@
 {
   "name": "ciba-english",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "main": "index.js",
   "scripts": {
     "start": "expo start",
@@ -17,6 +17,7 @@
     "@react-navigation/native-stack": "^7.0.0",
     "expo": "~52.0.23",
     "expo-asset": "~11.0.5",
+    "expo-clipboard": "~7.0.1",
     "expo-font": "~13.0.4",
     "expo-speech": "~13.0.0",
     "expo-splash-screen": "~0.29.24",
