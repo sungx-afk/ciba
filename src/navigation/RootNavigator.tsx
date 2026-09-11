@@ -1,5 +1,4 @@
 import React from 'react';
-import { Platform } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -11,6 +10,8 @@ import { BookmarksScreen } from '../screens/BookmarksScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { WordListScreen } from '../screens/WordListScreen';
 import { FlashcardScreen } from '../screens/FlashcardScreen';
+import { LoginScreen } from '../screens/LoginScreen';
+import { BookSelectScreen } from '../screens/BookSelectScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -26,9 +27,9 @@ function MainTabs() {
           backgroundColor: Colors.card,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? 88 : 60,
-          paddingBottom: Platform.OS === 'ios' ? 28 : 8,
-          paddingTop: 8,
+        },
+        tabBarIconStyle: {
+          marginBottom: 3,
         },
         tabBarLabelStyle: {
           fontSize: 11,
@@ -83,10 +84,14 @@ export function RootNavigator() {
         <Stack.Screen
           name="Flashcard"
           component={FlashcardScreen}
-          options={{
-            animation: 'slide_from_bottom',
-          }}
+          options={{ animation: 'slide_from_bottom' }}
         />
+        <Stack.Screen
+          name="Login"
+          component={LoginScreen}
+          options={{ animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen name="BookSelect" component={BookSelectScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

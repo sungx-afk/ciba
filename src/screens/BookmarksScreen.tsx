@@ -8,7 +8,7 @@ import {
   SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { allWords, useProgress } from '../storage/progressStore';
+import { useProgress } from '../storage/progressStore';
 import { WordCard } from '../components/WordCard';
 import { Header } from '../components/Header';
 import { Colors } from '../theme/colors';
@@ -18,11 +18,11 @@ interface BookmarksScreenProps {
 }
 
 export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) => {
-  const { state, toggleBookmark } = useProgress();
+  const { state, toggleBookmark, words } = useProgress();
 
   const bookmarkedWords = useMemo(() => {
-    return allWords.filter((w) => state.progressMap[w.id]?.isBookmarked);
-  }, [state.progressMap]);
+    return words.filter((w) => state.progressMap[w.id]?.isBookmarked);
+  }, [state.progressMap, words]);
 
   const handleStudyBookmarks = () => {
     if (!bookmarkedWords.length) return;

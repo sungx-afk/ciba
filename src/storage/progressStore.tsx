@@ -1,23 +1,25 @@
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import rawWordsData from '../data/words.json';
 import { Word, WordProgress, ProgressState, LearningStats } from '../types';
+import { authService, RemoteUser } from '../services/auth';
+import { packLibrary, RemotePack } from '../services/packLibrary';
 
 const STORAGE_KEY = '@ciba_progress_v1';
+const PACK_KEY = '@ciba_current_pack';
 
-export const allWords: Word[] = (rawWordsData as { words: Word[] }).words;
+const localWords: Word[] = (rawWordsData as { words: Word[] }).words;
 
-// 预先建立分类与意群索引
 export interface CategoryInfo {
   name: string;
   wordCount: number;
   subCategories: { name: string; wordCount: number }[];
 }
 
-export function buildCategories(): CategoryInfo[] {
+function buildCategories(words: Word[]): CategoryInfo[] {
   const map: Record<string, { total: number; subs: Record<string, number> }> = {};
-  
-  for (const w of allWords) {
+
+  for (const w of words) {
     const cat = w.cat || '其他';
     const sub = w.sub || '通用';
     if (!map[cat]) {
@@ -26,18 +28,16 @@ export function buildCategories(): CategoryInfo[] {
     map[cat].total += 1;
     map[cat].subs[sub] = (map[cat].subs[sub] || 0) + 1;
   }
-  
-  return Object.keys(map).map(catName => ({
+
+  return Object.keys(map).map((catName) => ({
     name: catName,
     wordCount: map[catName].total,
-    subCategories: Object.keys(map[catName].subs).map(subName => ({
+    subCategories: Object.keys(map[catName].subs).map((subName) => ({
       name: subName,
       wordCount: map[catName].subs[subName],
     })),
   }));
 }
-
-export const categoryList: CategoryInfo[] = buildCategories();
 
 function getTodayString(): string {
   const now = new Date();
@@ -55,7 +55,13 @@ const defaultState: ProgressState = {
   todayLearnedIds: [],
 };
 
+interface CurrentPack {
+  id: number;
+  name: string;
+}
+
 interface ProgressContextValue {
+  // 学习进度
   state: ProgressState;
   stats: LearningStats;
   recordReview: (wordId: number, grade: 'again' | 'hard' | 'good' | 'easy') => Promise<void>;
@@ -65,6 +71,21 @@ interface ProgressContextValue {
   exportProgressData: () => string;
   isWordDue: (wordId: number) => boolean;
   getProgressForWord: (wordId: number) => WordProgress | undefined;
+
+  // 词库数据
+  words: Word[];
+  categoryList: CategoryInfo[];
+  isLoadingWords: boolean;
+  wordSource: 'local' | 'remote';
+  currentPack: CurrentPack | null;
+  loadPackWords: (pack: RemotePack) => Promise<void>;
+  revertToLocal: () => void;
+
+  // 认证
+  user: RemoteUser | null;
+  isLoggedIn: boolean;
+  login: (loginName: string, password: string) => Promise<RemoteUser>;
+  logout: () => Promise<void>;
 }
 
 const ProgressContext = createContext<ProgressContextValue | null>(null);
@@ -73,7 +94,50 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [state, setState] = useState<ProgressState>(defaultState);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  // 初始化加载
+  // 词库数据
+  const [words, setWords] = useState<Word[]>(localWords);
+  const [isLoadingWords, setIsLoadingWords] = useState(false);
+  const [wordSource, setWordSource] = useState<'local' | 'remote'>('local');
+  const [currentPack, setCurrentPack] = useState<CurrentPack | null>(null);
+
+  // 认证
+  const [user, setUser] = useState<RemoteUser | null>(null);
+
+  // 初始化: 恢复登录态 + 恢复上次词库
+  useEffect(() => {
+    (async () => {
+      // 恢复登录
+      const restored = await authService.restore();
+      if (restored) setUser(restored);
+
+      // 恢复上次选择的词库
+      try {
+        const saved = await AsyncStorage.getItem(PACK_KEY);
+        if (saved) {
+          const pack = JSON.parse(saved) as CurrentPack;
+          setCurrentPack(pack);
+          // 异步加载远程词库 (不阻塞本地数据展示)
+          setIsLoadingWords(true);
+          packLibrary
+            .loadWordsFromPack(pack.id)
+            .then((remoteWords) => {
+              if (remoteWords.length > 0) {
+                setWords(remoteWords);
+                setWordSource('remote');
+              }
+            })
+            .catch((e) => console.warn('loadWordsFromPack failed', e))
+            .finally(() => setIsLoadingWords(false));
+        }
+      } catch {
+        // ignore
+      }
+
+      setIsLoaded(true);
+    })();
+  }, []);
+
+  // 加载本地进度
   useEffect(() => {
     async function load() {
       try {
@@ -81,23 +145,10 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const today = getTodayString();
         if (json) {
           const parsed: ProgressState = JSON.parse(json);
-          let streak = parsed.streakDays || 0;
           let todayLearned = parsed.todayLearnedIds || [];
-
           if (parsed.lastActiveDate !== today) {
-            // 新的一天
-            const yesterday = new Date();
-            yesterday.setDate(yesterday.getDate() - 1);
-            const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
-
-            if (parsed.lastActiveDate === yesterdayStr) {
-              // 连续打卡保留
-            } else if (parsed.lastActiveDate) {
-              // 超过 1 天未学，但打卡天数保留直到重新打卡
-            }
             todayLearned = [];
           }
-
           setState({
             ...defaultState,
             ...parsed,
@@ -106,14 +157,12 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       } catch (e) {
         console.error('Failed to load progress', e);
-      } finally {
-        setIsLoaded(true);
       }
     }
     load();
   }, []);
 
-  // 持久化存储
+  // 持久化进度
   const saveState = async (newState: ProgressState) => {
     setState(newState);
     try {
@@ -133,13 +182,12 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return p.nextReviewTime > 0 && p.nextReviewTime <= Date.now();
   };
 
-  // 记录学习打分
   const recordReview = async (wordId: number, grade: 'again' | 'hard' | 'good' | 'easy') => {
     const now = Date.now();
     const today = getTodayString();
     const currentProg = state.progressMap[wordId] || {
       wordId,
-      status: 'unlearned',
+      status: 'unlearned' as const,
       interval: 0,
       nextReviewTime: 0,
       lastReviewTime: 0,
@@ -156,13 +204,13 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     switch (grade) {
       case 'again':
         newInterval = 0;
-        nextReviewTime = now + 10 * 60 * 1000; // 10分钟后
+        nextReviewTime = now + 10 * 60 * 1000;
         newStatus = 'learning';
         lapseInc = 1;
         break;
       case 'hard':
         newInterval = 1;
-        nextReviewTime = now + 24 * 60 * 60 * 1000; // 1天
+        nextReviewTime = now + 24 * 60 * 60 * 1000;
         newStatus = 'learning';
         break;
       case 'good':
@@ -187,7 +235,6 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       status: newStatus,
     };
 
-    // 更新今日学习与打卡
     const todaySet = new Set(state.todayLearnedIds);
     todaySet.add(wordId);
 
@@ -215,13 +262,18 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
 
     await saveState(newState);
+
+    // 异步上报学习结果到服务端 (type: 0=重来 1=困难 2=一般 3=容易)
+    if (currentPack) {
+      const typeMap = { again: 0, hard: 1, good: 2, easy: 3 };
+      packLibrary.markNoteRead(currentPack.id, wordId, typeMap[grade]);
+    }
   };
 
-  // 收藏 / 生词本切换
   const toggleBookmark = async (wordId: number) => {
     const currentProg = state.progressMap[wordId] || {
       wordId,
-      status: 'unlearned',
+      status: 'unlearned' as const,
       interval: 0,
       nextReviewTime: 0,
       lastReviewTime: 0,
@@ -247,10 +299,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const updateSettings = async (
     newSettings: Partial<Pick<ProgressState, 'dailyGoal' | 'accent' | 'autoPronounce' | 'speechRate'>>
   ) => {
-    const newState: ProgressState = {
-      ...state,
-      ...newSettings,
-    };
+    const newState: ProgressState = { ...state, ...newSettings };
     await saveState(newState);
   };
 
@@ -263,11 +312,47 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     await saveState(cleared);
   };
 
-  const exportProgressData = (): string => {
-    return JSON.stringify(state, null, 2);
-  };
+  const exportProgressData = (): string => JSON.stringify(state, null, 2);
 
-  // 统计计算
+  // 加载远程词库
+  const loadPackWords = useCallback(async (pack: RemotePack) => {
+    setIsLoadingWords(true);
+    try {
+      const remoteWords = await packLibrary.loadWordsFromPack(pack.id);
+      if (remoteWords.length > 0) {
+        setWords(remoteWords);
+        setWordSource('remote');
+        const cp = { id: pack.id, name: pack.name };
+        setCurrentPack(cp);
+        await AsyncStorage.setItem(PACK_KEY, JSON.stringify(cp));
+      }
+    } finally {
+      setIsLoadingWords(false);
+    }
+  }, []);
+
+  const revertToLocal = useCallback(() => {
+    setWords(localWords);
+    setWordSource('local');
+    setCurrentPack(null);
+    AsyncStorage.removeItem(PACK_KEY);
+  }, []);
+
+  // 认证
+  const login = useCallback(async (loginName: string, password: string) => {
+    const u = await authService.login(loginName, password);
+    setUser(u);
+    return u;
+  }, []);
+
+  const logout = useCallback(async () => {
+    await authService.logout();
+    setUser(null);
+    revertToLocal();
+  }, [revertToLocal]);
+
+  const categoryList = useMemo(() => buildCategories(words), [words]);
+
   const stats: LearningStats = useMemo(() => {
     let masteredCount = 0;
     let learningCount = 0;
@@ -278,13 +363,12 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const p = state.progressMap[id];
       if (p.status === 'mastered') masteredCount++;
       else if (p.status === 'learning') learningCount++;
-
       if (p.nextReviewTime > 0 && p.nextReviewTime <= now) {
         dueTodayCount++;
       }
     }
 
-    const totalWords = allWords.length;
+    const totalWords = words.length;
     const unlearnedCount = Math.max(0, totalWords - masteredCount - learningCount);
 
     return {
@@ -297,25 +381,32 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       streakDays: state.streakDays,
       dailyGoal: state.dailyGoal,
     };
-  }, [state]);
+  }, [state, words]);
 
-  return (
-    <ProgressContext.Provider
-      value={{
-        state,
-        stats,
-        recordReview,
-        toggleBookmark,
-        updateSettings,
-        resetProgress,
-        exportProgressData,
-        isWordDue,
-        getProgressForWord,
-      }}
-    >
-      {children}
-    </ProgressContext.Provider>
-  );
+  const value: ProgressContextValue = {
+    state,
+    stats,
+    recordReview,
+    toggleBookmark,
+    updateSettings,
+    resetProgress,
+    exportProgressData,
+    isWordDue,
+    getProgressForWord,
+    words,
+    categoryList,
+    isLoadingWords,
+    wordSource,
+    currentPack,
+    loadPackWords,
+    revertToLocal,
+    user,
+    isLoggedIn: !!user,
+    login,
+    logout,
+  };
+
+  return <ProgressContext.Provider value={value}>{children}</ProgressContext.Provider>;
 };
 
 export const useProgress = () => {

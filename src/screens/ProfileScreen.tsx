@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -15,8 +15,12 @@ import { useProgress } from '../storage/progressStore';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
 
-export const ProfileScreen: React.FC = () => {
-  const { state, stats, updateSettings, resetProgress, exportProgressData } = useProgress();
+interface ProfileScreenProps {
+  navigation: any;
+}
+
+export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
+  const { state, stats, updateSettings, resetProgress, exportProgressData, user, isLoggedIn, logout, currentPack, wordSource } = useProgress();
 
   const handleGoalChange = (newGoal: number) => {
     updateSettings({ dailyGoal: newGoal });
@@ -57,6 +61,13 @@ export const ProfileScreen: React.FC = () => {
     );
   };
 
+  const handleLogout = () => {
+    Alert.alert('退出登录', '确定要退出登录吗？将切换回本地词库。', [
+      { text: '取消', style: 'cancel' },
+      { text: '确定', style: 'destructive', onPress: () => logout() },
+    ]);
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <Header title="我的 / 设置" />
@@ -65,13 +76,50 @@ export const ProfileScreen: React.FC = () => {
         {/* 用户概览卡片 */}
         <View style={styles.userCard}>
           <View style={styles.avatarCircle}>
-            <Ionicons name="person" size={32} color={Colors.primary} />
+            <Ionicons name={isLoggedIn ? 'person' : 'log-in-outline'} size={32} color={Colors.primary} />
           </View>
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>TOEFL 备考学者</Text>
-            <Text style={styles.userSub}>离线学习 · 数据纯本地存储</Text>
+            <Text style={styles.userName}>
+              {isLoggedIn ? user?.nickname || user?.loginName || '糍粑用户' : '未登录'}
+            </Text>
+            <Text style={styles.userSub}>
+              {isLoggedIn
+                ? `已同步 · ${wordSource === 'remote' ? `词库: ${currentPack?.name || '在线'}` : '本地词库'}`
+                : '登录后可使用在线词库'}
+            </Text>
           </View>
+          {isLoggedIn ? (
+            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
+              <Ionicons name="log-out-outline" size={18} color={Colors.pinwheelRed} />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.loginBtnSmall}
+              onPress={() => navigation.navigate('Login')}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.loginBtnSmallText}>登录</Text>
+            </TouchableOpacity>
+          )}
         </View>
+
+        {/* 词库切换 */}
+        <TouchableOpacity
+          style={[styles.sectionCard, styles.rowCard]}
+          onPress={() => navigation.navigate('BookSelect')}
+          activeOpacity={0.7}
+        >
+          <View style={styles.actionLeft}>
+            <Ionicons name="library-outline" size={20} color={Colors.primary} />
+            <View style={styles.packInfo}>
+              <Text style={styles.actionLabel}>切换词库</Text>
+              <Text style={styles.settingDesc} numberOfLines={1}>
+                当前: {currentPack ? currentPack.name : '本地词库 (TOEFL 意群)'}
+              </Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+        </TouchableOpacity>
 
         {/* 学习总览 */}
         <View style={styles.statsCard}>
@@ -245,6 +293,20 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 3,
   },
+  logoutBtn: {
+    padding: 8,
+  },
+  loginBtnSmall: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  loginBtnSmallText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
   statsCard: {
     backgroundColor: Colors.card,
     borderRadius: 16,
@@ -371,6 +433,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+    flex: 1,
+  },
+  packInfo: {
+    flex: 1,
+  },
+  rowCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   actionLabel: {
     fontSize: 14,

@@ -9,8 +9,7 @@ import {
   SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { allWords, useProgress } from '../storage/progressStore';
-import { Word } from '../types';
+import { useProgress } from '../storage/progressStore';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { WordCard } from '../components/WordCard';
 import { Header } from '../components/Header';
@@ -24,7 +23,7 @@ type FilterType = 'all' | 'unlearned' | 'mastered' | 'bookmarked';
 
 export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigation }) => {
   const { category, subCategory } = route.params || {};
-  const { state, toggleBookmark } = useProgress();
+  const { state, toggleBookmark, words } = useProgress();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
@@ -32,12 +31,12 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
 
   // 基础词汇池
   const baseWords = useMemo(() => {
-    return allWords.filter((w) => {
+    return words.filter((w) => {
       if (category && w.cat !== category) return false;
       if (subCategory && w.sub !== subCategory) return false;
       return true;
     });
-  }, [category, subCategory]);
+  }, [category, subCategory, words]);
 
   // 过滤逻辑
   const filteredWords = useMemo(() => {
