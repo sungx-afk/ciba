@@ -144,9 +144,13 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // 初始化: 恢复登录态 + 恢复上次词库
   useEffect(() => {
     (async () => {
-      // 恢复登录
-      const restored = await authService.restore();
-      if (restored) setUser(restored);
+      try {
+        // 恢复登录
+        const restored = await authService.restore();
+        if (restored) setUser(restored);
+      } catch (e) {
+        console.warn('[ProgressStore] authService.restore failed', e);
+      }
 
       // 恢复上次选择的词库
       try {
@@ -164,15 +168,18 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 setWordSource('remote');
               }
             })
-            .catch((e) => console.warn('loadWordsFromPack failed', e))
+            .catch((e) => console.warn('[ProgressStore] loadWordsFromPack failed', e))
             .finally(() => setIsLoadingWords(false));
         }
-      } catch {
-        // ignore
+      } catch (e) {
+        console.warn('[ProgressStore] restore pack failed', e);
       }
 
       setIsLoaded(true);
-    })();
+    })().catch((e) => {
+      console.error('[ProgressStore] init useEffect failed', e);
+      setIsLoaded(true); // 即便出错也要解除 loading 状态
+    });
   }, []);
 
   // 加载本地进度
@@ -195,10 +202,10 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           });
         }
       } catch (e) {
-        console.error('Failed to load progress', e);
+        console.error('[ProgressStore] Failed to load progress', e);
       }
     }
-    load();
+    load().catch((e) => console.error('[ProgressStore] load() unhandled rejection', e));
   }, []);
 
   // 持久化进度
