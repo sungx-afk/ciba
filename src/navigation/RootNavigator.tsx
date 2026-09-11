@@ -61,7 +61,7 @@ function MainTabs() {
           } else if (route.name === 'BookmarksTab') {
             iconName = focused ? 'bookmark' : 'bookmark-outline';
           } else if (route.name === 'ProfileTab') {
-            iconName = focused ? 'settings' : 'settings-outline';
+            iconName = focused ? 'person' : 'person-outline';
           }
 
           return <Ionicons name={iconName} size={size} color={color} />;
@@ -122,7 +122,7 @@ export function RootNavigator() {
         <Stack.Screen name="Register" component={RegisterScreen} />
         <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
         <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
-        
+
         <Stack.Screen  
           name="WebPage"
           component={WebPageScreen}
