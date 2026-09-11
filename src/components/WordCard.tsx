@@ -12,6 +12,8 @@ interface WordCardProps {
   onPress?: () => void;
   onToggleBookmark?: () => void;
   showMeaning?: boolean;
+  /** 是否显示右上角收藏图标（生词本内不需要） */
+  showBookmark?: boolean;
 }
 
 export const WordCard: React.FC<WordCardProps> = ({
@@ -21,6 +23,7 @@ export const WordCard: React.FC<WordCardProps> = ({
   onPress,
   onToggleBookmark,
   showMeaning = true,
+  showBookmark = true,
 }) => {
   const isBookmarked = progress?.isBookmarked || false;
   const isMastered = progress?.status === 'mastered';
@@ -62,7 +65,7 @@ export const WordCard: React.FC<WordCardProps> = ({
             </View>
           ) : null}
 
-          {onToggleBookmark ? (
+          {showBookmark && onToggleBookmark ? (
             <TouchableOpacity
               style={styles.bookmarkBtn}
               onPress={handleBookmark}
@@ -78,18 +81,22 @@ export const WordCard: React.FC<WordCardProps> = ({
         </View>
       </View>
 
-      {/* 意群标签 */}
-      <View style={styles.tagsRow}>
-        <View style={[styles.catTag, { backgroundColor: catColor + '18' }]}>
-          <View style={[styles.catDot, { backgroundColor: catColor }]} />
-          <Text style={[styles.catText, { color: catColor }]}>{word.cat}</Text>
+      {/* 意群标签：cat / sub 都为空时整行不渲染 */}
+      {word.cat || word.sub ? (
+        <View style={styles.tagsRow}>
+          {word.cat ? (
+            <View style={[styles.catTag, { backgroundColor: catColor + '18' }]}>
+              <View style={[styles.catDot, { backgroundColor: catColor }]} />
+              <Text style={[styles.catText, { color: catColor }]}>{word.cat}</Text>
+            </View>
+          ) : null}
+          {word.sub ? (
+            <View style={styles.subTag}>
+              <Text style={styles.subText}>{word.sub}</Text>
+            </View>
+          ) : null}
         </View>
-        {word.sub ? (
-          <View style={styles.subTag}>
-            <Text style={styles.subText}>{word.sub}</Text>
-          </View>
-        ) : null}
-      </View>
+      ) : null}
 
       {/* 释义 */}
       {showMeaning ? (
