@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -21,6 +22,8 @@ interface ProfileScreenProps {
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const { state, stats, updateSettings, resetProgress, exportProgressData, user, isLoggedIn, logout, currentPack, wordSource } = useProgress();
+
+  const [logoutVisible, setLogoutVisible] = useState(false);
 
   const handleGoalChange = (newGoal: number) => {
     updateSettings({ dailyGoal: newGoal });
@@ -62,10 +65,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   };
 
   const handleLogout = () => {
-    Alert.alert('退出登录', '确定要退出登录吗？将切换回本地词库。', [
-      { text: '取消', style: 'cancel' },
-      { text: '确定', style: 'destructive', onPress: () => logout() },
-    ]);
+    setLogoutVisible(true);
+  };
+
+  const confirmLogout = () => {
+    setLogoutVisible(false);
+    logout();
   };
 
   return (
@@ -94,11 +99,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 </TouchableOpacity>
               )}
             </View>
-            <Text style={styles.userSub}>
+            {/* <Text style={styles.userSub}>
               {isLoggedIn
                 ? `已同步 · ${wordSource === 'remote' ? `词库: ${currentPack?.name || '在线'}` : '本地词库'}`
                 : '登录后可使用在线词库'}
-            </Text>
+            </Text> */}
           </View>
           {isLoggedIn ? (
             <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
@@ -257,6 +262,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           <Text style={styles.aboutSub}>无账号 · 无广告 · 纯粹的意群单词记忆工具</Text>
         </View>
       </ScrollView>
+
+      <ConfirmDialog
+        visible={logoutVisible}
+        title="退出登录"
+        message="确定要退出登录吗？"
+        onConfirm={confirmLogout}
+        onCancel={() => setLogoutVisible(false)}
+      />
     </SafeAreaView>
   );
 };
