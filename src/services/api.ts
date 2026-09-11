@@ -286,22 +286,36 @@ export const AuthApi = {
 
   // 7. 微信客户端授权登录 (真实接入后端 /users/oauth2/wechat/app/login.json)
   wechatAppLogin: async (wechatParams: {
+    code?: string;
+    appid?: string;
     openid?: string;
     nickname?: string;
     headimgurl?: string;
     sex?: number;
-    code?: string;
   }): Promise<ApiResponse> => {
     try {
-      const openid = wechatParams.openid || `wx_${Date.now()}`;
+      const body: Record<string, any> = {
+        plat: PLAT,
+        appid: wechatParams.appid || 'wx97f824fd700ab212',
+      };
+      if (wechatParams.code) {
+        body.code = wechatParams.code;
+      }
+      if (wechatParams.openid) {
+        body.openid = wechatParams.openid;
+      }
+      if (wechatParams.nickname) {
+        body.nickname = wechatParams.nickname;
+      }
+      if (wechatParams.headimgurl) {
+        body.headimgurl = wechatParams.headimgurl;
+      }
+      if (wechatParams.sex !== undefined) {
+        body.sex = wechatParams.sex;
+      }
+
       const res = await request<ApiResponse>('POST', '/users/oauth2/wechat/app/login.json', {
-        body: {
-          openid,
-          nickname: wechatParams.nickname || '微信用户',
-          headimgurl: wechatParams.headimgurl || '',
-          sex: wechatParams.sex ?? 1,
-          plat: PLAT,
-        },
+        body,
       });
       return res;
     } catch (err: any) {

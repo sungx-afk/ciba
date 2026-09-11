@@ -2,7 +2,8 @@
   "expo": {
     "name": "糍粑英语",
     "slug": "ciba-english",
-    "version": "1.0.6",
+    "version": "1.0.7",
+    "scheme": "cibaenglish",
     "orientation": "portrait",
     "icon": "./src/assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,8 +16,17 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cibaenglish.app",
-      "buildNumber": "7",
+      "buildNumber": "8",
       "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLName": "weixin",
+            "CFBundleURLSchemes": [
+              "wx97f824fd700ab212",
+              "cibaenglish"
+            ]
+          }
+        ],
         "LSApplicationQueriesSchemes": [
           "weixin",
           "weixinULAPI"
