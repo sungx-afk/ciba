@@ -2,17 +2,6 @@ name: Build & Release iOS App
 
 on:
   push:
-    branches:
-      - master
-      - main
-    paths:
-      - 'src/**'
-      - 'App.tsx'
-      - 'index.js'
-      - 'app.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/ios-build-release.yml'
     tags:
       - 'v*'
   workflow_dispatch:
