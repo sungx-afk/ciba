@@ -13,6 +13,7 @@ import { WordListScreen } from '../screens/WordListScreen';
 import { FlashcardScreen } from '../screens/FlashcardScreen';
 import { BookSelectScreen } from '../screens/BookSelectScreen';
 import { PurchaseScreen } from '../screens/PurchaseScreen';
+import { WebPageScreen } from '../screens/WebPageScreen';
 
 import { LoginScreen } from '../screens/auth/LoginScreen';
 import { RegisterScreen } from '../screens/auth/RegisterScreen';
@@ -118,6 +119,12 @@ export function RootNavigator() {
         <Stack.Screen name="Register" component={RegisterScreen} />
         <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
         <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
+        
+        <Stack.Screen  
+          name="WebPage"
+          component={WebPageScreen}
+          options={{ animation: 'slide_from_right' }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

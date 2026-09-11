@@ -307,7 +307,7 @@ export const ProfileScreen: React.FC = () => {
         </View>
 
         {/* 数据与存储 */}
-        <View style={styles.sectionCard}>
+        {/* <View style={styles.sectionCard}>
           <Text style={styles.cardHeaderTitle}>数据与隐私</Text>
 
           <TouchableOpacity style={styles.actionRow} onPress={handleExport} activeOpacity={0.7}>
@@ -331,7 +331,7 @@ export const ProfileScreen: React.FC = () => {
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </TouchableOpacity>
-        </View>
+        </View> */}
 
         {/* 关于 */}
         <View style={styles.aboutFooter}>

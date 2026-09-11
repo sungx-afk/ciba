@@ -51,6 +51,10 @@ const BENEFITS = [
   '后续新增词库免费用',
 ];
 
+// TODO: 用户协议与隐私政策暂时指向同一页面，后续拆成各自的地址
+const AGREEMENT_URL = 'https://cibaen.com/privacy-policy.html';
+const POLICY_URL = 'https://cibaen.com/privacy-policy.html';
+
 interface PurchaseScreenProps {
   navigation: any;
 }
@@ -141,10 +145,20 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
           <TouchableOpacity activeOpacity={0.6}>
             <Text style={styles.footerLink}>恢复购买</Text>
           </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.6}>
+          <TouchableOpacity
+            activeOpacity={0.6}
+            onPress={() =>
+              navigation.navigate('WebPage', { url: AGREEMENT_URL, title: '用户协议' })
+            }
+          >
             <Text style={styles.footerLink}>用户协议</Text>
           </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.6}>
+          <TouchableOpacity
+            activeOpacity={0.6}
+            onPress={() =>
+              navigation.navigate('WebPage', { url: POLICY_URL, title: '隐私政策' })
+            }
+          >
             <Text style={styles.footerLink}>隐私政策</Text>
           </TouchableOpacity>
         </View>
