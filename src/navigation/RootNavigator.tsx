@@ -26,7 +26,8 @@ const Stack = createNativeStackNavigator();
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
-  const tabBarHeight = 60 + insets.bottom;
+  const bottomInset = Number(insets?.bottom) || 0;
+  const tabBarHeight = 60 + bottomInset;
 
   return (
     <Tab.Navigator
@@ -39,7 +40,7 @@ function MainTabs() {
           borderTopColor: Colors.border,
           borderTopWidth: 1,
           height: tabBarHeight,
-          paddingBottom: insets.bottom,
+          paddingBottom: bottomInset,
         },
         tabBarItemStyle: {
           justifyContent: 'center',

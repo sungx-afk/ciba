@@ -190,7 +190,8 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setState({
             ...defaultState,
             ...parsed,
-            todayLearnedIds: todayLearned,
+            progressMap: parsed.progressMap || {},
+            todayLearnedIds: Array.isArray(todayLearned) ? todayLearned : [],
           });
         }
       } catch (e) {
@@ -480,8 +481,10 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     let dueTodayCount = 0;
     const now = Date.now();
 
-    for (const id in state.progressMap) {
-      const p = state.progressMap[id];
+    const progressMap = state?.progressMap || {};
+    for (const id in progressMap) {
+      const p = progressMap[id];
+      if (!p) continue;
       if (p.status === 'mastered') masteredCount++;
       else if (p.status === 'learning') learningCount++;
       if (p.nextReviewTime > 0 && p.nextReviewTime <= now) {
@@ -489,7 +492,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     }
 
-    const totalWords = words.length;
+    const totalWords = (words || []).length;
     const unlearnedCount = Math.max(0, totalWords - masteredCount - learningCount);
 
     return {
@@ -498,9 +501,9 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       learningCount,
       unlearnedCount,
       dueTodayCount,
-      todayLearnedCount: state.todayLearnedIds.length,
-      streakDays: state.streakDays,
-      dailyGoal: state.dailyGoal,
+      todayLearnedCount: (state?.todayLearnedIds || []).length,
+      streakDays: state?.streakDays || 0,
+      dailyGoal: state?.dailyGoal || 20,
     };
   }, [state, words]);
 

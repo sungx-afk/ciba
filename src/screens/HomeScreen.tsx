@@ -76,7 +76,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [dropdownTop, setDropdownTop] = useState(120);
 
-  const todayGoalProgress = Math.min(1, stats.todayLearnedCount / (stats.dailyGoal || 20));
+  const todayGoalProgress = Math.min(1, (stats?.todayLearnedCount || 0) / (stats?.dailyGoal || 20));
 
   /** 顶部卡组: 我的卡组 */
   const loadTopPacks = useCallback(async () => {
