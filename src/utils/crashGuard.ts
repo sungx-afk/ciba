@@ -1,10 +1,5 @@
 /**
  * 全局防闪退守护与启动黑匣子日志系统 (CrashGuard & BootLogger)
- * 
- * 作用：
- * 1. 彻底阻止 React Native 在 Release 模式下因未捕获 JS 异常调用 RCTFatal / abort() 发生闪退。
- * 2. 拦截并收集启动阶段及运行时的关键日志与异常堆栈。
- * 3. 驱动屏幕上的实时诊断浮层，白屏或异常时立即直观展示错误信息。
  */
 
 export interface LogEntry {
@@ -15,10 +10,13 @@ export interface LogEntry {
   stack?: string;
 }
 
-const MAX_LOGS = 50;
+const MAX_LOGS = 60;
 const logBuffer: LogEntry[] = [];
 type LogListener = (entry: LogEntry) => void;
-const listeners = new Set<LogListener>();
+type FatalErrorListener = (error: { message: string; stack?: string }) => void;
+
+const logListeners = new Set<LogListener>();
+const fatalErrorListeners = new Set<FatalErrorListener>();
 
 function nowStr(): string {
   const d = new Date();
@@ -38,7 +36,7 @@ export function addBootLog(tag: string, message: string, level: 'info' | 'warn' 
   if (logBuffer.length > MAX_LOGS) {
     logBuffer.shift();
   }
-  // 打印到控制台
+
   if (level === 'error') {
     console.error(`[${entry.time}][${tag}] ${message}`, stack || '');
   } else if (level === 'warn') {
@@ -47,10 +45,8 @@ export function addBootLog(tag: string, message: string, level: 'info' | 'warn' 
     console.log(`[${entry.time}][${tag}] ${message}`);
   }
 
-  listeners.forEach((fn) => {
-    try {
-      fn(entry);
-    } catch (_) {}
+  logListeners.forEach((fn) => {
+    try { fn(entry); } catch (_) {}
   });
 }
 
@@ -59,15 +55,48 @@ export function getBootLogs(): LogEntry[] {
 }
 
 export function subscribeBootLog(listener: LogListener): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+  logListeners.add(listener);
+  return () => logListeners.delete(listener);
 }
 
-// ─── 全局异常守护初始化 ──────────────────────────────────────────────────────────
-(function setupCrashGuard() {
-  addBootLog('CrashGuard', '启动全局异常防闪退守护系统');
+export function subscribeFatalError(listener: FatalErrorListener): () => void {
+  fatalErrorListeners.add(listener);
+  return () => fatalErrorListeners.delete(listener);
+}
 
-  // 1. 拦截 React Native 全局 JS 异常
+// ─── 1. 防御性 Polyfill globalThis.expo ──────────────────────────────────────────
+// 解决在原生 JSI / TurboModule 尚未注入完成时，expo-modules-core 顶层访问 undefined.EventEmitter 导致的致命崩溃
+(function polyfillExpoGlobals() {
+  const g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : window as any);
+  if (!g.expo) {
+    class FallbackEventEmitter {
+      addListener() { return { remove: () => {} }; }
+      removeListener() {}
+      removeAllListeners() {}
+      emit() {}
+      listenerCount() { return 0; }
+    }
+    class FallbackNativeModule extends FallbackEventEmitter {}
+    class FallbackSharedObject extends FallbackEventEmitter { release() {} }
+    class FallbackSharedRef extends FallbackSharedObject { nativeRefType = 'unknown'; }
+
+    g.expo = {
+      EventEmitter: FallbackEventEmitter,
+      NativeModule: FallbackNativeModule,
+      SharedObject: FallbackSharedObject,
+      SharedRef: FallbackSharedRef,
+      modules: {},
+      getViewConfig: () => ({}),
+      reloadAppAsync: async () => {},
+    };
+    addBootLog('CrashGuard', '已装载 globalThis.expo 基础兜底桩');
+  }
+})();
+
+// ─── 2. 全局 JS 异常拦截器 ───────────────────────────────────────────────────────
+(function setupCrashGuard() {
+  addBootLog('CrashGuard', '安装全局异常捕获器');
+
   const g = typeof global !== 'undefined' ? (global as any) : (typeof window !== 'undefined' ? (window as any) : {});
   if (g && g.ErrorUtils) {
     const errorUtils = g.ErrorUtils;
@@ -75,27 +104,33 @@ export function subscribeBootLog(listener: LogListener): () => void {
 
     errorUtils.setGlobalHandler((error: any, isFatal?: boolean) => {
       const msg = error?.message || String(error);
-      const stack = error?.stack ? String(error.stack).split('\n').slice(0, 6).join('\n') : undefined;
+      const stack = error?.stack ? String(error.stack).split('\n').slice(0, 10).join('\n') : undefined;
 
-      addBootLog('FatalError', `捕获到全局未捕获异常: ${msg}`, 'error', stack);
+      addBootLog('FatalError', msg, 'error', stack);
 
-      // 关键防闪退：将 isFatal 强制降级为 false，阻止 Native 侧调用 RCTFatal / abort()
+      // 通知全屏 Emergency 错误视图
+      fatalErrorListeners.forEach((fn) => {
+        try { fn({ message: msg, stack }); } catch (_) {}
+      });
+
+      // 强制将 isFatal 设为 false，阻止 Native 层调用 abort() 闪退
       if (typeof originalHandler === 'function') {
         try {
           originalHandler(error, false);
         } catch (_) {}
       }
     });
-    addBootLog('CrashGuard', 'ErrorUtils.setGlobalHandler 注册成功');
   }
 
-  // 2. 拦截全局未处理的 Promise Rejection
   if (g && typeof g.addEventListener === 'function') {
     g.addEventListener('unhandledrejection', (event: any) => {
       const reason = event?.reason;
       const msg = reason?.message || String(reason);
-      const stack = reason?.stack ? String(reason.stack).split('\n').slice(0, 6).join('\n') : undefined;
-      addBootLog('UnhandledPromise', `未处理的 Promise 拒绝: ${msg}`, 'error', stack);
+      const stack = reason?.stack ? String(reason.stack).split('\n').slice(0, 10).join('\n') : undefined;
+      addBootLog('UnhandledPromise', msg, 'error', stack);
+      fatalErrorListeners.forEach((fn) => {
+        try { fn({ message: msg, stack }); } catch (_) {}
+      });
     });
   }
 })();
