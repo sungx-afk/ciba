@@ -83,14 +83,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <Text style={styles.userName} numberOfLines={1}>
                 {isLoggedIn ? user?.nickname || user?.loginName || '糍粑用户' : '未登录'}
               </Text>
-              <TouchableOpacity
-                style={styles.vipButton}
-                onPress={() => navigation.navigate('Purchase')}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
-                <Text style={styles.vipButtonText}>升级会员</Text>
-              </TouchableOpacity>
+              {isLoggedIn && user && (
+                <TouchableOpacity
+                  style={styles.vipButton}
+                  onPress={() => navigation.navigate('Purchase')}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
+                  <Text style={styles.vipButtonText}>{user.vip ? '尊享会员' : '升级会员'}</Text>
+                </TouchableOpacity>
+              )}
             </View>
             <Text style={styles.userSub}>
               {isLoggedIn
