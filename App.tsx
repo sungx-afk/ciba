@@ -246,6 +246,20 @@ function DiagnosticBadge() {
 export default function App() {
   useEffect(() => {
     addBootLog('App', 'App 根组件挂载成功');
+
+    // 预加载 Ionicons 矢量图标字体
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { Ionicons } = require('@expo/vector-icons');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Font = require('expo-font');
+      if (Ionicons && Ionicons.font && Font && Font.loadAsync) {
+        Font.loadAsync(Ionicons.font)
+          .then(() => addBootLog('App', 'Ionicons 字体载入成功'))
+          .catch((e: any) => addBootLog('App', `Ionicons 字体加载警告: ${e?.message}`, 'warn'));
+      }
+    } catch (_) {}
+
     // 安全隐藏原生启动屏遮罩
     try {
       if (ExpoSplashScreen?.hideAsync) {

@@ -64,34 +64,35 @@ export function subscribeFatalError(listener: FatalErrorListener): () => void {
   return () => fatalErrorListeners.delete(listener);
 }
 
-// ─── 1. 防御性 Polyfill globalThis.expo ──────────────────────────────────────────
-// 解决在原生 JSI / TurboModule 尚未注入完成时，expo-modules-core 顶层访问 undefined.EventEmitter 导致的致命崩溃
-(function polyfillExpoGlobals() {
-  const g = typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : window as any);
-  if (!g.expo) {
-    class FallbackEventEmitter {
-      addListener() { return { remove: () => {} }; }
-      removeListener() {}
-      removeAllListeners() {}
-      emit() {}
-      listenerCount() { return 0; }
+// ─── 1. 防御性保护 expo-font 运行时 ─────────────────────────────────────────────
+// 保证在任何原生模块异步挂载窗口期或字体未就绪时，Font.isLoaded 与 Font.getLoadedFonts 永不抛出 undefined is not a function
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const Font = require('expo-font');
+  if (Font) {
+    if (typeof Font.isLoaded === 'function') {
+      const origIsLoaded = Font.isLoaded;
+      Font.isLoaded = function safeIsLoaded(fontFamily: string) {
+        try {
+          return origIsLoaded(fontFamily);
+        } catch (_) {
+          return false;
+        }
+      };
     }
-    class FallbackNativeModule extends FallbackEventEmitter {}
-    class FallbackSharedObject extends FallbackEventEmitter { release() {} }
-    class FallbackSharedRef extends FallbackSharedObject { nativeRefType = 'unknown'; }
-
-    g.expo = {
-      EventEmitter: FallbackEventEmitter,
-      NativeModule: FallbackNativeModule,
-      SharedObject: FallbackSharedObject,
-      SharedRef: FallbackSharedRef,
-      modules: {},
-      getViewConfig: () => ({}),
-      reloadAppAsync: async () => {},
-    };
-    addBootLog('CrashGuard', '已装载 globalThis.expo 基础兜底桩');
+    if (typeof Font.getLoadedFonts === 'function') {
+      const origGetLoadedFonts = Font.getLoadedFonts;
+      Font.getLoadedFonts = function safeGetLoadedFonts() {
+        try {
+          return origGetLoadedFonts() || [];
+        } catch (_) {
+          return [];
+        }
+      };
+    }
+    addBootLog('CrashGuard', '已装载 expo-font 运行时安全防护桩');
   }
-})();
+} catch (_) {}
 
 // ─── 2. 全局 JS 异常拦截器 ───────────────────────────────────────────────────────
 (function setupCrashGuard() {
