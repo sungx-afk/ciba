@@ -8,7 +8,14 @@ import { packLibrary, RemotePack } from '../services/packLibrary';
 const STORAGE_KEY = '@ciba_progress_v1';
 const PACK_KEY = '@ciba_current_pack';
 
-const localWords: Word[] = (rawWordsData as { words: Word[] }).words;
+const localWords: Word[] =
+  Array.isArray((rawWordsData as any)?.words)
+    ? (rawWordsData as any).words
+    : Array.isArray((rawWordsData as any)?.default?.words)
+    ? (rawWordsData as any).default.words
+    : Array.isArray(rawWordsData)
+    ? (rawWordsData as any)
+    : [];
 
 export interface CategoryInfo {
   name: string;
@@ -18,8 +25,10 @@ export interface CategoryInfo {
 
 function buildCategories(words: Word[]): CategoryInfo[] {
   const map: Record<string, { total: number; subs: Record<string, number> }> = {};
+  const list = Array.isArray(words) ? words : [];
 
-  for (const w of words) {
+  for (const w of list) {
+    if (!w) continue;
     const cat = w.cat || '其他';
     const sub = w.sub || '通用';
     if (!map[cat]) {

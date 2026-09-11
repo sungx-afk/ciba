@@ -31,26 +31,28 @@ interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
+  componentStack: string;
 }
 
 class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, componentStack: '' };
   }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
     return { hasError: true, error };
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    this.setState({ componentStack: errorInfo?.componentStack || '' });
     addBootLog('ErrorBoundary', `UI 渲染异常: ${error?.message}`, 'error', error?.stack);
     console.error('App 根级捕获到异常:', error, errorInfo);
   }
 
   handleRestart = async () => {
     try {
-      this.setState({ hasError: false, error: null });
+      this.setState({ hasError: false, error: null, componentStack: '' });
     } catch {
       // ignore
     }
@@ -59,27 +61,53 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
   handleClearAndRestart = async () => {
     try {
       await AsyncStorage.clear();
-      this.setState({ hasError: false, error: null });
+      this.setState({ hasError: false, error: null, componentStack: '' });
     } catch {
-      this.setState({ hasError: false, error: null });
+      this.setState({ hasError: false, error: null, componentStack: '' });
     }
   };
 
   render() {
     if (this.state.hasError) {
+      const errorMsg = this.state.error?.message || '未知错误，已为您拦截保护';
+      const stack = this.state.error?.stack || '';
+      const compStack = this.state.componentStack || '';
+
       return (
         <SafeAreaView style={styles.errorContainer}>
-          <Text style={styles.errorEmoji}>⚠️</Text>
-          <Text style={styles.errorTitle}>启动遇到轻微异常</Text>
-          <Text style={styles.errorMsg}>
-            {this.state.error?.message || '未知错误，已为您拦截保护'}
-          </Text>
-          <TouchableOpacity style={styles.btnPrimary} onPress={this.handleRestart} activeOpacity={0.8}>
-            <Text style={styles.btnPrimaryText}>重新载入应用</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.btnSecondary} onPress={this.handleClearAndRestart} activeOpacity={0.8}>
-            <Text style={styles.btnSecondaryText}>清理缓存并重启</Text>
-          </TouchableOpacity>
+          <ScrollView style={styles.errorScroll} contentContainerStyle={styles.errorScrollContent}>
+            <Text style={styles.errorEmoji}>⚠️</Text>
+            <Text style={styles.errorTitle}>启动遇到轻微异常</Text>
+            <View style={styles.errorMsgCard}>
+              <Text style={styles.errorMsgCardTitle}>错误信息：</Text>
+              <Text style={styles.errorMsgCardContent}>{errorMsg}</Text>
+            </View>
+
+            {stack ? (
+              <View style={styles.errorStackCard}>
+                <Text style={styles.errorStackCardTitle}>错误调用堆栈 (Stack Trace)：</Text>
+                <ScrollView style={styles.errorStackScroll} nestedScrollEnabled>
+                  <Text style={styles.errorStackText}>{stack}</Text>
+                </ScrollView>
+              </View>
+            ) : null}
+
+            {compStack ? (
+              <View style={styles.errorStackCard}>
+                <Text style={styles.errorStackCardTitle}>故障组件位置 (Component Stack)：</Text>
+                <ScrollView style={styles.errorStackScroll} nestedScrollEnabled>
+                  <Text style={styles.errorStackText}>{compStack}</Text>
+                </ScrollView>
+              </View>
+            ) : null}
+
+            <TouchableOpacity style={styles.btnPrimary} onPress={this.handleRestart} activeOpacity={0.8}>
+              <Text style={styles.btnPrimaryText}>重新载入应用</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.btnSecondary} onPress={this.handleClearAndRestart} activeOpacity={0.8}>
+              <Text style={styles.btnSecondaryText}>清理缓存并重启</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </SafeAreaView>
       );
     }
@@ -322,26 +350,68 @@ const styles = StyleSheet.create({
   errorContainer: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  errorScroll: {
+    flex: 1,
+  },
+  errorScrollContent: {
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
+    paddingTop: 30,
+    paddingBottom: 40,
   },
   errorEmoji: {
     fontSize: 48,
-    marginBottom: 16,
+    marginBottom: 12,
   },
   errorTitle: {
     fontSize: 18,
     fontWeight: '800',
     color: Colors.textPrimary,
+    marginBottom: 14,
+  },
+  errorMsgCard: {
+    backgroundColor: '#FFF0F0',
+    borderColor: '#FFCDD2',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    width: '100%',
+    marginBottom: 14,
+  },
+  errorMsgCardTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#D32F2F',
+    marginBottom: 4,
+  },
+  errorMsgCardContent: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#C62828',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  errorStackCard: {
+    backgroundColor: '#1E1E1E',
+    borderRadius: 12,
+    padding: 12,
+    width: '100%',
+    marginBottom: 14,
+  },
+  errorStackCardTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FF8A80',
     marginBottom: 8,
   },
-  errorMsg: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 20,
+  errorStackScroll: {
+    maxHeight: 180,
+  },
+  errorStackText: {
+    fontSize: 11,
+    color: '#E0E0E0',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 16,
   },
   btnPrimary: {
     backgroundColor: Colors.primary,
