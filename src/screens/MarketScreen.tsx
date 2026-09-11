@@ -16,8 +16,10 @@ import { useProgress } from '../storage/progressStore';
 import { packLibrary, RemotePack } from '../services/packLibrary';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 interface MarketScreenProps {
+  route: any;
   navigation: any;
 }
 
@@ -26,8 +28,11 @@ interface MarketScreenProps {
  * 列表: GET  /anki/pack/in-store.json
  * 安装: POST /anki/pack/install.json (sourceId + name)
  */
-export const MarketScreen: React.FC<MarketScreenProps> = ({ navigation }) => {
+export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation }) => {
   const { isLoggedIn, setInstalledPack } = useProgress();
+
+  // 分类页检测到「我的卡组」为空时进入，顶部展示引导提示
+  const firstSetup = route?.params?.firstSetup === true;
 
   const [packs, setPacks] = useState<RemotePack[]>([]);
   const [myPacks, setMyPacks] = useState<RemotePack[]>([]);
@@ -35,6 +40,8 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ navigation }) => {
   const [loading, setLoading] = useState(true);
   const [installingId, setInstallingId] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // 待确认添加的卡组 (不为 null 时显示确认框)
+  const [pendingPack, setPendingPack] = useState<RemotePack | null>(null);
 
   const loadMarket = useCallback(async () => {
     setLoading(true);
@@ -76,8 +83,9 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ navigation }) => {
     [myPacks, setInstalledPack, navigation]
   );
 
+  /** 点击添加: 先弹出 ConfirmDialog 确认 */
   const handleInstall = useCallback(
-    async (pack: RemotePack) => {
+    (pack: RemotePack) => {
       if (!isLoggedIn) {
         Alert.alert('需要登录', '请先登录后再添加卡组', [
           { text: '取消', style: 'cancel' },
@@ -86,28 +94,35 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ navigation }) => {
         return;
       }
       if (installingId !== null) return;
-
-      // 点击后立即进入 loading，保证有即时反馈
-      setInstallingId(pack.id);
-      try {
-        const installed = await packLibrary.installPack(pack.id, pack.name);
-        setInstalledIds((prev) => {
-          const next = new Set(prev);
-          next.add(pack.id);
-          return next;
-        });
-        setInstallingId(null);
-        // 通知分类页刷新我的卡组并切换到新安装的卡组
-        setInstalledPack(installed || ({ ...pack } as RemotePack));
-        navigation.goBack();
-        Alert.alert('添加成功', `「${pack.name}」已添加到我的卡组`);
-      } catch (e: any) {
-        setInstallingId(null);
-        Alert.alert('添加失败', e?.message || '安装卡组失败，请稍后重试');
-      }
+      setPendingPack(pack);
     },
-    [isLoggedIn, navigation, setInstalledPack, installingId]
+    [isLoggedIn, navigation, installingId]
   );
+
+  /** 确认框点「确定」: 执行安装 */
+  const confirmInstall = useCallback(async () => {
+    const pack = pendingPack;
+    setPendingPack(null);
+    if (!pack) return;
+
+    setInstallingId(pack.id);
+    try {
+      const installed = await packLibrary.installPack(pack.id, pack.name);
+      setInstalledIds((prev) => {
+        const next = new Set(prev);
+        next.add(pack.id);
+        return next;
+      });
+      setInstallingId(null);
+      // 通知分类页刷新我的卡组并切换到新安装的卡组
+      setInstalledPack(installed || ({ ...pack } as RemotePack));
+      navigation.goBack();
+      Alert.alert('添加成功', `「${pack.name}」已添加到我的卡组`);
+    } catch (e: any) {
+      setInstallingId(null);
+      Alert.alert('添加失败', e?.message || '安装卡组失败，请稍后重试');
+    }
+  }, [pendingPack, navigation, setInstalledPack]);
 
   const renderCard = (item: RemotePack) => {
     const installed = installedIds.has(item.id);
@@ -176,6 +191,15 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ navigation }) => {
         onBack={() => navigation.goBack()}
       />
 
+      {firstSetup ? (
+        <View style={styles.tipBanner}>
+          <Ionicons name="information-circle" size={18} color={Colors.primary} />
+          <Text style={styles.tipText}>
+            你还没有卡组，请先添加一个分类背单词卡组后才能使用
+          </Text>
+        </View>
+      ) : null}
+
       {loading ? (
         <View style={styles.centerWrap}>
           <ActivityIndicator size="large" color={Colors.primary} />
@@ -207,6 +231,14 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ navigation }) => {
           )}
         </ScrollView>
       )}
+
+      <ConfirmDialog
+        visible={pendingPack !== null}
+        title="添加卡组"
+        message={`确定把「${pendingPack?.name || ''}」添加到我的卡组？`}
+        onConfirm={confirmInstall}
+        onCancel={() => setPendingPack(null)}
+      />
     </SafeAreaView>
   );
 };
@@ -219,6 +251,26 @@ const styles = StyleSheet.create({
   listContent: {
     padding: 16,
     paddingBottom: 40,
+  },
+  tipBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primary + '33',
+    gap: 8,
+  },
+  tipText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    color: Colors.primaryDark,
+    fontWeight: '600',
   },
   card: {
     flexDirection: 'row',

@@ -70,6 +70,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [activeSub, setActiveSub] = useState<RemotePack | null>(null);
   const [showAllToday, setShowAllToday] = useState(false);
+  // 新安装卡组的子卡组同步中
+  const [preparingPack, setPreparingPack] = useState(false);
+  const [preparedCount, setPreparedCount] = useState(0);
+
+  // 已提示过前往卡组市场（避免重复跳转）
+  const marketPromptedRef = useRef(false);
+  // 刚安装的卡组 id（服务端在后台线程复制子卡组，需要轮询等待）
+  const justInstalledRef = useRef<number | null>(null);
+  // 子卡组加载代次，避免旧请求覆盖新结果
+  const subLoadGenRef = useRef(0);
 
   // 顶部卡组下拉选择
   const selectorRef = useRef<View>(null);
@@ -85,6 +95,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     try {
       const { packs } = await packLibrary.fetchMyPacks({ start: 0, limit: 50 });
       setTopPacks(packs);
+
+      // 我的卡组为空: 引导前往卡组市场添加卡组
+      if (!packs.length) {
+        setSelectedTop(null);
+        setSubPacks([]);
+        setSubTotal(0);
+        if (!marketPromptedRef.current && isLoggedIn) {
+          marketPromptedRef.current = true;
+          navigation.navigate('Market', { firstSetup: true });
+        }
+        return;
+      }
+      marketPromptedRef.current = false;
+
       setSelectedTop((prev) => {
         if (prev && packs.some((p) => p.id === prev.id)) return prev;
         const saved = currentPack ? packs.find((p) => p.id === currentPack.id) : undefined;
@@ -95,22 +119,80 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     } finally {
       setLoadingPacks(false);
     }
-  }, [currentPack?.id]);
+  }, [currentPack?.id, isLoggedIn, navigation]);
 
   /** 某个父卡组下的分类卡组 */
   const loadSubPacks = useCallback(async (parentId: number, start: number) => {
+    const gen = ++subLoadGenRef.current;
     setLoadingSubs(true);
     try {
       const { packs, total } = await packLibrary.fetchSubPacks(parentId, {
         start,
         limit: SUB_PAGE_SIZE,
       });
+      if (gen !== subLoadGenRef.current) return;
       setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
       setSubTotal(total);
     } catch (e: any) {
+      if (gen !== subLoadGenRef.current) return;
       setErrorMsg(e?.message || '加载分类卡组失败');
     } finally {
-      setLoadingSubs(false);
+      if (gen === subLoadGenRef.current) setLoadingSubs(false);
+    }
+  }, []);
+
+  /**
+   * 刚安装的卡组: 服务端在后台线程逐个复制子卡组，
+   * 这里轮询 /anki/pack.json?parentId=xxx 直到数量连续两次一致（视为复制完成）。
+   */
+  const loadSubPacksUntilReady = useCallback(async (parentId: number) => {
+    const gen = ++subLoadGenRef.current;
+    const intervalMs = 3000;
+    const maxAttempts = 60; // 最多约 3 分钟
+    const emptyGiveUp = 10; // 一直为 0 则 30 秒后放弃
+    let lastTotal = -1;
+    let stableTimes = 0;
+
+    setLoadingSubs(true);
+    setPreparingPack(true);
+    setPreparedCount(0);
+    try {
+      for (let i = 0; i < maxAttempts; i++) {
+        const { packs, total } = await packLibrary.fetchSubPacks(parentId, {
+          start: 0,
+          limit: SUB_PAGE_SIZE,
+        });
+        if (gen !== subLoadGenRef.current) return false;
+
+        setSubPacks(packs);
+        setSubTotal(total);
+        setPreparedCount(total);
+
+        // 首个分类卡组也要已经有词，避免只建了卡组还没复制卡片
+        const firstPackReady = packs.length === 0 || (packs[0]?.card_count || 0) > 0;
+        if (total > 0 && total === lastTotal && firstPackReady) {
+          stableTimes += 1;
+          if (stableTimes >= 2) return true; // 数量与内容都已稳定，视为复制完成
+        } else {
+          stableTimes = 0;
+        }
+
+        if (total === 0 && i + 1 >= emptyGiveUp) break; // 迟迟没有数据，放弃
+        lastTotal = total;
+
+        if (i < maxAttempts - 1) {
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+      }
+      return false;
+    } catch (e: any) {
+      if (gen === subLoadGenRef.current) setErrorMsg(e?.message || '加载分类卡组失败');
+      return false;
+    } finally {
+      if (gen === subLoadGenRef.current) {
+        setPreparingPack(false);
+        setLoadingSubs(false);
+      }
     }
   }, []);
 
@@ -134,8 +216,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     setSubTotal(0);
     setActiveSub(null);
     setShowAllToday(false);
-    loadSubPacks(selectedTop.id, 0);
-  }, [selectedTop?.id, loadSubPacks]);
+    // 刚安装的卡组走轮询，等服务端把子卡组复制完
+    if (justInstalledRef.current === selectedTop.id) {
+      justInstalledRef.current = null;
+      loadSubPacksUntilReady(selectedTop.id);
+    } else {
+      loadSubPacks(selectedTop.id, 0);
+    }
+  }, [selectedTop?.id, loadSubPacks, loadSubPacksUntilReady]);
 
   const reloadAll = useCallback(async () => {
     await loadTopPacks();
@@ -178,6 +266,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   /** 市场安装完成: 刷新我的卡组并切换到新安装的卡组 */
   const handleMarketInstalled = useCallback(async () => {
     if (!installedPack) return;
+    // 标记为新安装，后续会轮询等待其子卡组复制完成
+    justInstalledRef.current = installedPack.id;
     await loadTopPacks();
     setSelectedTop(installedPack);
     setInstalledPack(null);
@@ -462,44 +552,47 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     );
   };
 
-  const renderListHeader = () => (
-    <View>
-      {/* 顶部标题栏 + 卡组下拉选择 */}
-      <View style={styles.header}>
-        <View ref={selectorRef} collapsable={false} style={styles.headerBrand}>
-          <TouchableOpacity
-            style={styles.brandTouch}
-            onPress={openDropdown}
-            activeOpacity={0.7}
-            disabled={topPacks.length === 0}
-          >
-            <Image
-              source={require('../assets/pinwheel.png')}
-              style={styles.logoImage}
-              resizeMode="contain"
-            />
-            <View style={styles.brandTextWrap}>
-              <Text style={styles.brandTitle}>糍粑英语</Text>
-              <View style={styles.selectorPill}>
-                <Text style={styles.selectorPillText} numberOfLines={1}>
-                  {selectedTop ? selectedTop.name : currentPack ? currentPack.name : '选择卡组'}
-                </Text>
-                <Ionicons name="chevron-down" size={13} color={Colors.primary} />
-              </View>
+  /** 固定顶部标题栏：不随列表滚动 */
+  const renderTopBar = () => (
+    <View style={styles.header}>
+      <View ref={selectorRef} collapsable={false} style={styles.headerBrand}>
+        <TouchableOpacity
+          style={styles.brandTouch}
+          onPress={openDropdown}
+          activeOpacity={0.7}
+          disabled={topPacks.length === 0}
+        >
+          <Image
+            source={require('../assets/pinwheel.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
+          <View style={styles.brandTextWrap}>
+            <Text style={styles.brandTitle}>糍粑英语</Text>
+            <View style={styles.selectorPill}>
+              <Text style={styles.selectorPillText} numberOfLines={1}>
+                {selectedTop ? selectedTop.name : currentPack ? currentPack.name : '选择卡组'}
+              </Text>
+              <Ionicons name="chevron-down" size={13} color={Colors.primary} />
             </View>
-          </TouchableOpacity>
-        </View>
-
-        <TouchableOpacity style={styles.addButton} onPress={handleOpenMarket} activeOpacity={0.7}>
-          <Ionicons name="add" size={20} color={Colors.primary} />
+          </View>
         </TouchableOpacity>
-
-        <View style={styles.streakBadge}>
-          <Ionicons name="flame" size={16} color={Colors.pinwheelRed} />
-          <Text style={styles.streakText}>{stats.streakDays} 天</Text>
-        </View>
       </View>
 
+      <TouchableOpacity style={styles.addButton} onPress={handleOpenMarket} activeOpacity={0.7}>
+        <Ionicons name="add" size={20} color={Colors.primary} />
+      </TouchableOpacity>
+
+      <View style={styles.streakBadge}>
+        <Ionicons name="flame" size={16} color={Colors.pinwheelRed} />
+        <Text style={styles.streakText}>{stats.streakDays} 天</Text>
+      </View>
+    </View>
+  );
+
+  /** 可随列表滚动的内容：今日学习看板 + 分类卡组标题 */
+  const renderListHeader = () => (
+    <View>
       {/* 今日学习看板卡片 */}
       <View style={styles.dashboardCard}>
         <View style={styles.dashHeader}>
@@ -563,10 +656,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       {/* 分类卡组标题 */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>分类卡组{subTotal ? `（${subTotal}）` : ''}</Text>
-        <Text style={styles.sectionHint}>
+        <Text style={styles.sectionHint} numberOfLines={1} ellipsizeMode="tail">
           {selectedTop ? selectedTop.name : ''}
         </Text>
       </View>
+
+      {/* 新安装卡组的子卡组同步进度 */}
+      {preparingPack ? (
+        <View style={styles.preparingBar}>
+          <ActivityIndicator size="small" color={Colors.primary} />
+          <Text style={styles.preparingText}>
+            卡组数据同步中… 已获取 {preparedCount} 个分类卡组
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 
@@ -596,6 +699,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
               <Text style={styles.retryText}>去登录</Text>
             </TouchableOpacity>
           ) : null}
+        </View>
+      );
+    }
+    // 我的卡组为空: 引导去卡组市场添加
+    if (topPacks.length === 0) {
+      return (
+        <View style={styles.emptyWrap}>
+          <Ionicons name="albums-outline" size={48} color={Colors.border} />
+          <Text style={styles.emptyText}>你还没有卡组，请先从卡组市场添加分类背单词卡组后才能使用</Text>
+          <TouchableOpacity
+            style={styles.retryBtn}
+            onPress={() => navigation.navigate('Market', { firstSetup: true })}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.retryText}>去卡组市场</Text>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -670,6 +789,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
+
+      {/* 固定顶部标题栏 */}
+      {renderTopBar()}
 
       {renderDropdown()}
 
@@ -1114,6 +1236,25 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'right',
     marginLeft: 8,
+  },
+  preparingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primary + '33',
+    gap: 8,
+  },
+  preparingText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.primaryDark,
   },
   subCard: {
     backgroundColor: Colors.card,

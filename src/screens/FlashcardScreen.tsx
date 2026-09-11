@@ -236,11 +236,15 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
           <View style={styles.cardHeaderRow}>
             <View style={[styles.catTag, { backgroundColor: catColor + '18' }]}>
               <View style={[styles.catDot, { backgroundColor: catColor }]} />
-              <Text style={[styles.catText, { color: catColor }]}>{currentWord.cat}</Text>
+              <Text style={[styles.catText, { color: catColor }]} numberOfLines={1}>
+                {currentWord.cat}
+              </Text>
             </View>
             {currentWord.sub ? (
               <View style={styles.subTag}>
-                <Text style={styles.subText}>{currentWord.sub}</Text>
+                <Text style={styles.subText} numberOfLines={1} ellipsizeMode="tail">
+                  {currentWord.sub}
+                </Text>
               </View>
             ) : null}
 
@@ -367,11 +371,13 @@ const styles = StyleSheet.create({
   cardHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'nowrap',
     gap: 8,
   },
   catTag: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 0,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
@@ -387,17 +393,21 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   subTag: {
+    flexShrink: 1,
+    minWidth: 0,
     backgroundColor: Colors.divider,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
   },
   subText: {
+    flexShrink: 1,
     fontSize: 12,
     color: Colors.textSecondary,
   },
   statusTag: {
     marginLeft: 'auto',
+    flexShrink: 0,
     backgroundColor: Colors.success + '15',
     paddingHorizontal: 8,
     paddingVertical: 3,

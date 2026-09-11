@@ -22,11 +22,15 @@ export const Header: React.FC<HeaderProps> = ({ title, subtitle, onBack, rightAc
             <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
           </TouchableOpacity>
         ) : null}
-        <View>
-          <Text style={styles.title} numberOfLines={1}>
+        <View style={styles.titleWrap}>
+          <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">
             {title}
           </Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          {subtitle ? (
+            <Text style={styles.subtitle} numberOfLines={1} ellipsizeMode="tail">
+              {subtitle}
+            </Text>
+          ) : null}
         </View>
       </View>
       {rightAction ? (
@@ -53,10 +57,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    minWidth: 0,
   },
   backButton: {
     marginRight: 8,
     padding: 4,
+    flexShrink: 0,
+  },
+  // flex:1 + minWidth:0 保证长标题只在自身区域内省略，不会挤走右侧图标
+  titleWrap: {
+    flex: 1,
+    minWidth: 0,
   },
   title: {
     fontSize: 18,
@@ -70,5 +81,6 @@ const styles = StyleSheet.create({
   },
   rightButton: {
     padding: 6,
+    flexShrink: 0,
   },
 });
