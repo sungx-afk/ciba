@@ -372,7 +372,7 @@ export const LoginScreen: React.FC = () => {
             <View style={styles.heroSection}>
               <View style={styles.heroTextCol}>
                 <Text style={styles.heroTitle}>Hello!</Text>
-                <Text style={styles.heroSubtitle}>欢迎使用灵感背词平台</Text>
+                <Text style={styles.heroSubtitle}>糍粑分类背单词</Text>
                 <Text style={styles.heroTagline}>意群联想记忆 · 高效突破核心词汇</Text>
               </View>
 
