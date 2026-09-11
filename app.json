@@ -2,7 +2,7 @@
   "expo": {
     "name": "糍粑英语",
     "slug": "ciba-english",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./src/assets/icon.png",
     "userInterfaceStyle": "light",
@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cibaenglish.app",
-      "buildNumber": "4"
+      "buildNumber": "5"
     },
     "android": {
       "package": "com.cibaenglish.app",

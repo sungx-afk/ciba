@@ -11,7 +11,9 @@ import {
   Alert,
   ActivityIndicator,
   Image,
+  Linking,
 } from 'react-native';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { Colors } from '../../theme/colors';
@@ -138,7 +140,7 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  // 4. 微信快捷授权登录
+  // 4. 微信授权登录
   const handleWechatLogin = async () => {
     if (!agreeTerms) {
       Alert.alert('提示', '请先阅读并勾选用户协议与隐私政策');
@@ -147,52 +149,95 @@ export const LoginScreen: React.FC = () => {
 
     setSocialLoading(true);
     try {
-      const res = await AuthApi.wechatAppLogin({
-        openid: `wx_ciba_${Date.now()}`,
-        nickname: '微信词友',
-        headimgurl: 'https://cibaen.com/static/avatar/default.png',
-        sex: 1,
-      });
-
-      if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
-        await login(res.user, res.token);
-        Alert.alert('微信登录成功', `欢迎回来，${res.user.nickname || '微信用户'}！`, [
-          { text: '确定', onPress: () => navigation.goBack() },
-        ]);
-      } else {
-        Alert.alert('微信授权失败', res?.msg || '微信登录失败');
+      // 真实检测当前设备是否安装了微信客户端
+      const canOpen = await Linking.canOpenURL('weixin://');
+      if (!canOpen) {
+        Alert.alert(
+          '未检测到微信',
+          '您的设备尚未安装微信客户端。推荐使用手机验证码一键登录，无需密码，安全便捷。',
+          [
+            { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
+            { text: '知道了', style: 'cancel' },
+          ]
+        );
+        return;
       }
+
+      // 真正唤起微信客户端
+      await Linking.openURL('weixin://');
+
+      Alert.alert(
+        '微信登录提示',
+        '已为您唤起微信客户端。当前应用推荐使用手机验证码直接登录，新用户首次登录自动注册。',
+        [
+          { text: '使用手机验证码登录', onPress: () => setActiveTab('mobile') },
+          { text: '返回', style: 'cancel' },
+        ]
+      );
     } catch (err: any) {
-      Alert.alert('登录异常', err.message || '微信调起失败');
+      Alert.alert('唤起微信异常', err.message || '无法打开微信客户端，请直接使用手机验证码登录。');
     } finally {
       setSocialLoading(false);
     }
   };
 
-  // 5. Apple 授权真实登录
+  // 5. Apple 授权原生真实登录
   const handleAppleLogin = async () => {
     if (!agreeTerms) {
       Alert.alert('提示', '请先阅读并勾选用户协议与隐私政策');
       return;
     }
 
+    // 检查当前设备环境是否支持 Apple 登录
+    try {
+      const isAvailable = await AppleAuthentication.isAvailableAsync();
+      if (!isAvailable) {
+        Alert.alert('提示', '当前设备或系统环境不支持通过 Apple 登录，建议使用手机号验证码一键登录');
+        return;
+      }
+    } catch {
+      Alert.alert('提示', '当前系统不支持 Apple 授权登录，建议使用手机验证码登录');
+      return;
+    }
+
     setSocialLoading(true);
     try {
+      // 真正拉起 iOS 系统的 Apple 授权原生窗口 (Face ID / 密码)
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      const appleUserId = credential.user;
+      let fullName = 'Apple 学员';
+      if (credential.fullName) {
+        const namePart = `${credential.fullName.familyName || ''}${credential.fullName.givenName || ''}`.trim();
+        if (namePart) fullName = namePart;
+      }
+
       const res = await AuthApi.appleLogin({
-        appleUserId: `guest_${Date.now()}`,
-        fullName: 'Apple 尊享学员',
+        appleUserId,
+        fullName,
+        email: credential.email || undefined,
+        identityToken: credential.identityToken || undefined,
       });
 
       if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
         await login(res.user, res.token);
-        Alert.alert('Apple 登录成功', `欢迎回来，${res.user.nickname || 'Apple 学员'}！`, [
+        Alert.alert('登录成功', `欢迎回来，${res.user.nickname || fullName}！`, [
           { text: '开启背词', onPress: () => navigation.goBack() },
         ]);
       } else {
-        Alert.alert('Apple 登录失败', res?.msg || 'Apple ID 授权失败');
+        Alert.alert('Apple 登录失败', res?.msg || 'Apple 授权凭证校验失败，请稍后重试');
       }
     } catch (err: any) {
-      Alert.alert('登录异常', err.message || 'Apple 授权调起失败');
+      if (err?.code === 'ERR_REQUEST_CANCELED') {
+        // 用户主动关闭或取消了 Apple 登录弹窗，无需提示报错
+        return;
+      }
+      Alert.alert('登录失败', err.message || '调起 Apple 授权异常，请使用手机号验证码登录');
     } finally {
       setSocialLoading(false);
     }

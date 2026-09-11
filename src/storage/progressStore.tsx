@@ -154,7 +154,14 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     (async () => {
       try {
-        // 恢复登录
+        // 恢复登录态 (优先读取统一用户信息)
+        const storedUser = await AsyncStorage.getItem('@ciba_user_info');
+        if (storedUser) {
+          try {
+            const parsed = JSON.parse(storedUser);
+            if (parsed) setUser(parsed);
+          } catch (_) {}
+        }
         const restored = await authService.restore();
         if (restored) setUser(restored);
       } catch (e) {

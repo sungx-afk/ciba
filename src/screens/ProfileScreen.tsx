@@ -15,15 +15,26 @@ import { useProgress } from '../storage/progressStore';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useAuth } from '../context/AuthContext';
 
 interface ProfileScreenProps {
   navigation: any;
 }
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
-  const { state, stats, updateSettings, resetProgress, exportProgressData, user, isLoggedIn, logout, currentPack, wordSource } = useProgress();
+  const { user: authUser, isLoggedIn: authLoggedIn, logout: authLogout } = useAuth();
+  const { state, stats, updateSettings, resetProgress, exportProgressData, user: progressUser, isLoggedIn: progressLoggedIn, logout: progressLogout, currentPack, wordSource } = useProgress();
+
+  const user = authUser || progressUser;
+  const isLoggedIn = authLoggedIn || progressLoggedIn;
 
   const [logoutVisible, setLogoutVisible] = useState(false);
+
+  // 手机号脱敏
+  const maskMobile = (m?: string) => {
+    if (!m) return '';
+    return m.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2');
+  };
 
   const handleGoalChange = (newGoal: number) => {
     updateSettings({ dailyGoal: newGoal });
@@ -68,9 +79,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
     setLogoutVisible(true);
   };
 
-  const confirmLogout = () => {
+  const confirmLogout = async () => {
     setLogoutVisible(false);
-    logout();
+    try {
+      await authLogout();
+    } catch (_) {}
+    try {
+      await progressLogout();
+    } catch (_) {}
   };
 
   return (
@@ -86,27 +102,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           <View style={styles.userInfo}>
             <View style={styles.userNameRow}>
               <Text style={styles.userName} numberOfLines={1}>
-                {isLoggedIn ? user?.nickname || user?.loginName || '糍粑用户' : '未登录'}
+                {isLoggedIn ? user?.nickname || user?.loginName || maskMobile(user?.mobile) || '糍粑学员' : '未登录'}
               </Text>
-              {isLoggedIn && user && (
+              {isLoggedIn && (
                 <TouchableOpacity
                   style={styles.vipButton}
                   onPress={() => navigation.navigate('Purchase')}
                   activeOpacity={0.7}
                 >
                   <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
-                  <Text style={styles.vipButtonText}>{user.vip ? '尊享会员' : '升级会员'}</Text>
+                  <Text style={styles.vipButtonText}>{user?.vip ? '尊享会员' : '升级会员'}</Text>
                 </TouchableOpacity>
               )}
             </View>
-            {/* <Text style={styles.userSub}>
+            <Text style={styles.userSub}>
               {isLoggedIn
-                ? `已同步 · ${wordSource === 'remote' ? `词库: ${currentPack?.name || '在线'}` : '本地词库'}`
-                : '登录后可使用在线词库'}
-            </Text> */}
+                ? (user?.mobile ? maskMobile(user.mobile) : user?.email || (user?.vip ? '尊享会员用户' : '学员用户'))
+                : '登录后可同步词书与多端学习进度'}
+            </Text>
           </View>
           {isLoggedIn ? (
-            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
+            <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
               <Ionicons name="log-out-outline" size={18} color={Colors.pinwheelRed} />
             </TouchableOpacity>
           ) : (

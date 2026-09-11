@@ -59,7 +59,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setToken(newToken);
       await setApiToken(newToken);
       await AsyncStorage.setItem(TOKEN_KEY, newToken);
+      await AsyncStorage.setItem('@ciba_token', newToken);
       await AsyncStorage.setItem(USER_KEY, JSON.stringify(newUser));
+      await AsyncStorage.setItem('@ciba_user_info', JSON.stringify(newUser));
     } catch (e) {
       console.warn('保存登录态失败', e);
     }
@@ -72,7 +74,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setToken(null);
       await setApiToken(null);
       await AsyncStorage.removeItem(TOKEN_KEY);
+      await AsyncStorage.removeItem('@ciba_token');
       await AsyncStorage.removeItem(USER_KEY);
+      await AsyncStorage.removeItem('@ciba_user_info');
     } catch (e) {
       console.warn('清空登录态失败', e);
     }

@@ -19,19 +19,13 @@ import { CountdownButton } from '../../components/CountdownButton';
 import { AuthApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 
-type RegisterType = 'mobile' | 'email';
-
 export const RegisterScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { login } = useAuth();
 
-  const [registerType, setRegisterType] = useState<RegisterType>('mobile');
-
-  // 表单状态
+  // 表单状态 (纯手机号注册)
   const [mobile, setMobile] = useState('');
   const [mobileCode, setMobileCode] = useState('');
-  const [email, setEmail] = useState('');
-  const [emailCode, setEmailCode] = useState('');
   const [nickname, setNickname] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -74,33 +68,17 @@ export const RegisterScreen: React.FC = () => {
     }
   };
 
-  // 发送邮箱验证码
-  const handleSendEmailCode = async (): Promise<boolean> => {
-    const trimmed = email.trim();
-    if (!trimmed || !/^\S+@\S+\.\S+$/.test(trimmed)) {
-      Alert.alert('提示', '请输入有效的电子邮箱地址');
-      return false;
-    }
-
-    try {
-      const res = await AuthApi.sendEmailCode(trimmed, 'register');
-      if (res && (res.result === 0 || res.result === 1)) {
-        Alert.alert('发送成功', '验证码已发送至您的邮箱');
-        return true;
-      } else {
-        Alert.alert('提示', res?.msg || '邮箱验证码发送失败');
-        return false;
-      }
-    } catch (e: any) {
-      Alert.alert('发送异常', e.message || '网络连接超时');
-      return false;
-    }
-  };
-
   // 提交注册
   const handleRegister = async () => {
     if (!agreeTerms) {
       Alert.alert('提示', '请先阅读并勾选用户协议与隐私政策');
+      return;
+    }
+
+    const trimmedMobile = mobile.trim();
+    const trimmedCode = mobileCode.trim();
+    if (!trimmedMobile || !trimmedCode) {
+      Alert.alert('提示', '请填写手机号和收到的验证码');
       return;
     }
 
@@ -116,54 +94,20 @@ export const RegisterScreen: React.FC = () => {
 
     setSubmitting(true);
     try {
-      if (registerType === 'mobile') {
-        const trimmedMobile = mobile.trim();
-        const trimmedCode = mobileCode.trim();
-        if (!trimmedMobile || !trimmedCode) {
-          Alert.alert('提示', '请填写手机号和收到的验证码');
-          setSubmitting(false);
-          return;
-        }
+      const res = await AuthApi.registerByMobile({
+        mobile: trimmedMobile,
+        code: trimmedCode,
+        password,
+        nickname: nickname.trim() || undefined,
+      });
 
-        const res = await AuthApi.registerByMobile({
-          mobile: trimmedMobile,
-          code: trimmedCode,
-          password,
-          nickname: nickname.trim() || undefined,
-        });
-
-        if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
-          await login(res.user, res.token);
-          Alert.alert('注册成功', `欢迎加入糍粑背单词，${res.user.nickname || '同学'}！`, [
-            { text: '开启学习', onPress: () => navigation.popToTop() },
-          ]);
-        } else {
-          Alert.alert('注册失败', res?.msg || '注册处理失败，请稍后重试');
-        }
+      if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
+        await login(res.user, res.token);
+        Alert.alert('注册成功', `欢迎加入糍粑背单词，${res.user.nickname || '同学'}！`, [
+          { text: '开启学习', onPress: () => navigation.popToTop() },
+        ]);
       } else {
-        const trimmedEmail = email.trim();
-        const trimmedCode = emailCode.trim();
-        if (!trimmedEmail || !trimmedCode) {
-          Alert.alert('提示', '请填写邮箱和收到的验证码');
-          setSubmitting(false);
-          return;
-        }
-
-        const res = await AuthApi.registerByEmail({
-          email: trimmedEmail,
-          code: trimmedCode,
-          password,
-          nickname: nickname.trim() || undefined,
-        });
-
-        if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
-          await login(res.user, res.token);
-          Alert.alert('注册成功', `欢迎加入糍粑背单词，${res.user.nickname || '同学'}！`, [
-            { text: '开启学习', onPress: () => navigation.popToTop() },
-          ]);
-        } else {
-          Alert.alert('注册失败', res?.msg || '注册处理失败，请稍后重试');
-        }
+        Alert.alert('注册失败', res?.msg || '注册处理失败，请稍后重试');
       }
     } catch (err: any) {
       Alert.alert('注册失败', err.message || '网络连接异常');
@@ -197,7 +141,7 @@ export const RegisterScreen: React.FC = () => {
               >
                 <Ionicons name="chevron-back" size={22} color="#5C5243" />
               </TouchableOpacity>
-              <Text style={styles.navTitle}>创建账号</Text>
+              <Text style={styles.navTitle}>创建手机账号</Text>
               <View style={{ width: 38 }} />
             </View>
 
@@ -205,105 +149,38 @@ export const RegisterScreen: React.FC = () => {
             <View style={styles.headerHero}>
               <Text style={styles.headerHeroTitle}>开启高效背词</Text>
               <Text style={styles.headerHeroSub}>
-                注册后解锁多设备云端词库与背词遗忘曲线算法
+                手机号一键注册，多设备云端词库自动同步
               </Text>
             </View>
 
             {/* 浮层悬浮卡片 */}
             <View style={styles.floatingCard}>
-              {/* Tab 切换 */}
-              <View style={styles.cardTabRow}>
-                <TouchableOpacity
-                  style={styles.cardTabItem}
-                  onPress={() => setRegisterType('mobile')}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    style={[
-                      styles.cardTabText,
-                      registerType === 'mobile' && styles.cardTabTextActive,
-                    ]}
-                  >
-                    手机号码注册
-                  </Text>
-                  {registerType === 'mobile' && <View style={styles.cardTabIndicator} />}
-                </TouchableOpacity>
+              <AuthInput
+                placeholder="请输入手机号码"
+                keyboardType="phone-pad"
+                maxLength={13}
+                iconName="phone-portrait-outline"
+                prefix="+86"
+                value={formatMobile(mobile)}
+                onChangeText={handleMobileChange}
+                onClear={() => setMobile('')}
+              />
 
-                <TouchableOpacity
-                  style={styles.cardTabItem}
-                  onPress={() => setRegisterType('email')}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    style={[
-                      styles.cardTabText,
-                      registerType === 'email' && styles.cardTabTextActive,
-                    ]}
-                  >
-                    电子邮箱注册
-                  </Text>
-                  {registerType === 'email' && <View style={styles.cardTabIndicator} />}
-                </TouchableOpacity>
-              </View>
-
-              {/* 输入表单 */}
-              {registerType === 'mobile' ? (
-                <>
-                  <AuthInput
-                    placeholder="请输入手机号码"
-                    keyboardType="phone-pad"
-                    maxLength={13}
-                    iconName="phone-portrait-outline"
-                    prefix="+86"
-                    value={formatMobile(mobile)}
-                    onChangeText={handleMobileChange}
-                    onClear={() => setMobile('')}
+              <AuthInput
+                placeholder="请输入短信验证码"
+                keyboardType="number-pad"
+                maxLength={6}
+                iconName="shield-checkmark-outline"
+                value={mobileCode}
+                onChangeText={setMobileCode}
+                rightAction={
+                  <CountdownButton
+                    onSend={handleSendMobileCode}
+                    disabled={mobile.length !== 11}
+                    text="获取验证码"
                   />
-
-                  <AuthInput
-                    placeholder="请输入短信验证码"
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    iconName="shield-checkmark-outline"
-                    value={mobileCode}
-                    onChangeText={setMobileCode}
-                    rightAction={
-                      <CountdownButton
-                        onSend={handleSendMobileCode}
-                        disabled={mobile.length !== 11}
-                        text="获取验证码"
-                      />
-                    }
-                  />
-                </>
-              ) : (
-                <>
-                  <AuthInput
-                    placeholder="请输入电子邮箱"
-                    keyboardType="email-address"
-                    iconName="mail-outline"
-                    value={email}
-                    onChangeText={setEmail}
-                    onClear={() => setEmail('')}
-                  />
-
-                  <AuthInput
-                    placeholder="请输入邮箱验证码"
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    iconName="shield-checkmark-outline"
-                    value={emailCode}
-                    onChangeText={setEmailCode}
-                    rightAction={
-                      <CountdownButton
-                        onSend={handleSendEmailCode}
-                        disabled={!email.trim()}
-                        text="获取验证码"
-                      />
-                    }
-                  />
-                </>
-              )}
+                }
+              />
 
               <AuthInput
                 placeholder="学习昵称（选填）"

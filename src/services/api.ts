@@ -314,6 +314,7 @@ export const AuthApi = {
     appleUserId: string;
     email?: string;
     fullName?: string;
+    identityToken?: string;
   }): Promise<ApiResponse> => {
     try {
       // 通过微信/第三方统一接入通道为 Apple 用户注册或登录
@@ -322,6 +323,7 @@ export const AuthApi = {
           openid: `apple_${appleParams.appleUserId}`,
           nickname: appleParams.fullName || 'Apple用户',
           plat: PLAT,
+          identity_token: appleParams.identityToken,
         },
       });
       return res;
