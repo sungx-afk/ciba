@@ -61,6 +61,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     resetPackMasteredDelta,
     currentTopPack,
     setCurrentTopPack,
+    resetCurrentTopPack,
     readRememberedTopPack,
   } = useProgress();
 
@@ -119,7 +120,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
       // 我的卡组为空: 引导前往卡组市场添加卡组
       if (!packs.length) {
-        setSelectedTop(null);
+        // 仅清内存，避免服务端偶发返回空列表时误删「上次记住的卡组」
+        resetCurrentTopPack();
         setSubPacks([]);
         setSubTotal(0);
         if (!marketPromptedRef.current && isLoggedIn) {
@@ -136,18 +138,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
       // ① 本次已选过且仍存在 -> 保持
       const prev = currentTopPackRef.current;
-      if (prev && packs.some((p) => p.id === prev.id)) return;
+      if (prev && packs.some((p) => Number(p.id) === Number(prev.id))) return;
       // ② 上次记住的卡组；不存在则 ③ currentPack；再退回 ④ 第一个
+      // 注意: 服务端 id 可能返回字符串，统一转成数字再比较
       const remembered =
-        rememberedId !== null ? packs.find((p) => p.id === rememberedId) : undefined;
-      const saved = currentPack ? packs.find((p) => p.id === currentPack.id) : undefined;
+        rememberedId !== null ? packs.find((p) => Number(p.id) === rememberedId) : undefined;
+      const saved = currentPack
+        ? packs.find((p) => Number(p.id) === Number(currentPack.id))
+        : undefined;
       setSelectedTop(remembered || saved || packs[0] || null);
     } catch (e: any) {
       setErrorMsg(e?.message || '加载我的卡组失败');
     } finally {
       setLoadingPacks(false);
     }
-  }, [currentPack?.id, isLoggedIn, navigation, readRememberedTopPack, setCurrentTopPack]);
+  }, [
+    currentPack?.id,
+    isLoggedIn,
+    navigation,
+    readRememberedTopPack,
+    resetCurrentTopPack,
+    setCurrentTopPack,
+  ]);
 
   /** 某个父卡组下的分类卡组 */
   const loadSubPacks = useCallback(async (parentId: number, start: number) => {
@@ -237,11 +249,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
   // 登录成功后（或切换账号后）用最新登录信息重新拉取我的卡组
   useEffect(() => {
+    // 登录态仍在异步读取中，先不要做任何清空，避免误删「上次记住的卡组」
+    if (authLoading) return;
+
     if (!isLoggedIn) {
       loadedUserIdRef.current = null; // 退出登录后允许再次登录时重新拉取
-      // 清空上一账号残留的卡组数据
+      // 清空上一账号残留的卡组数据（仅内存，保留本地记住的卡组）
       setTopPacks([]);
-      setSelectedTop(null);
+      resetCurrentTopPack();
       setSubPacks([]);
       setSubTotal(0);
       setActiveSub(null);
@@ -253,7 +268,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     loadedUserIdRef.current = uid;
     loadTopPacks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoggedIn, (user as any)?.id]);
+  }, [authLoading, isLoggedIn, (user as any)?.id]);
 
   // 切换顶部卡组时重新拉取其分类卡组
   useEffect(() => {
@@ -296,7 +311,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
   const handleSelectTopPack = (pack: RemotePack) => {
     setDropdownVisible(false);
-    if (selectedTop?.id === pack.id) return;
+    if (selectedTop && Number(selectedTop.id) === Number(pack.id)) return;
     setSelectedTop(pack);
   };
 

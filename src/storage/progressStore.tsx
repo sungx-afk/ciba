@@ -127,6 +127,8 @@ interface ProgressContextValue {
   // 当前显示的顶层卡组（分类页顶部切换的那个），其它页面可直接读取
   currentTopPack: RemotePack | null;
   setCurrentTopPack: (pack: RemotePack | null) => void;
+  /** 仅清除内存中的选中卡组（不影响「上次记住的卡组」本地记录） */
+  resetCurrentTopPack: () => void;
   /** 读取上次记住的卡组（供启动/重新登录时优先选中） */
   readRememberedTopPack: () => Promise<{ id: number; name: string } | null>;
 
@@ -453,6 +455,14 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, []);
 
+  /**
+   * 仅清除内存中的选中状态，保留「上次记住的卡组」本地记录。
+   * 用于退出登录 / 回到本地词库等场景，避免把记住的卡组一并删掉。
+   */
+  const resetCurrentTopPack = useCallback(() => {
+    setCurrentTopPackState(null);
+  }, []);
+
   /** 读取上次记住的卡组 id + name */
   const readRememberedTopPack = useCallback(async (): Promise<{ id: number; name: string } | null> => {
     try {
@@ -488,12 +498,13 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setWords(localWords);
     setWordSource('local');
     setCurrentPack(null);
-    setCurrentTopPack(null);
+    // 只清内存，保留「上次记住的卡组」，退出后重新登录仍能恢复
+    resetCurrentTopPack();
     setTodayWords([]);
     setTodayWordsTotal(0);
     setTodayWordsPackId(null);
     AsyncStorage.removeItem(PACK_KEY);
-  }, []);
+  }, [resetCurrentTopPack]);
 
   /**
    * 拉取某个卡组的今日学习单词列表
@@ -649,6 +660,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     resetPackMasteredDelta,
     currentTopPack,
     setCurrentTopPack,
+    resetCurrentTopPack,
     readRememberedTopPack,
     user,
     isLoggedIn: !!user,

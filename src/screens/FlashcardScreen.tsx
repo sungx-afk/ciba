@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -28,7 +28,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     useProgress();
 
   // 构建当前复习/学习单词队列
-  const studyQueue: Word[] = useMemo(() => {
+  const rawQueue: Word[] = useMemo(() => {
     // 今日学习单词 / 子卡组单词列表 (learn-by-menu 拉取的卡片)
     if (wordIds && wordIds.length) {
       const pool = new Map<number, Word>();
@@ -93,10 +93,43 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     wordIds,
   ]);
 
+  /**
+   * 排序: 未记住(未掌握)的单词优先，已记住(已掌握)的单词放到最后。
+   * 使用稳定排序，保证同组内维持原有顺序。
+   */
+  const orderedQueue: Word[] = useMemo(() => {
+    const isMastered = (w: Word) => (state.progressMap[w.id]?.status === 'mastered' ? 1 : 0);
+    return rawQueue
+      .map((w, index) => ({ w, index, mastered: isMastered(w) }))
+      .sort((a, b) => a.mastered - b.mastered || a.index - b.index)
+      .map((item) => item.w);
+  }, [rawQueue, state.progressMap]);
+
+  /**
+   * 会话队列: 进入页面时按「未记住优先」排定顺序后锁定，
+   * 避免学习中评分导致队列重排、索引错乱或已学单词再次出现。
+   */
+  const lockedOrderRef = useRef<number[] | null>(null);
+  const studyQueue: Word[] = useMemo(() => {
+    if (!orderedQueue.length) return orderedQueue;
+    if (!lockedOrderRef.current) {
+      lockedOrderRef.current = orderedQueue.map((w) => w.id);
+    }
+    const byId = new Map(orderedQueue.map((w) => [w.id, w]));
+    const list: Word[] = [];
+    for (const id of lockedOrderRef.current) {
+      const w = byId.get(id);
+      if (w) list.push(w);
+    }
+    return list;
+  }, [orderedQueue]);
+
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [learnedInSessionCount, setLearnedInSessionCount] = useState(0);
+  // 底部操作栏高度，用于定位右下角浮动「已记住」按钮
+  const [bottomBarHeight, setBottomBarHeight] = useState(84);
 
   const currentWord = studyQueue[currentIndex];
   const progressInfo = currentWord ? state.progressMap[currentWord.id] : undefined;
@@ -296,19 +329,27 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         </TouchableOpacity>
       </ScrollView>
 
-      {/* 底部记忆反馈按钮 */}
-      <View style={styles.bottomBar}>
-        {/* 已记住: 上报 type=4 */}
-        <TouchableOpacity
-          style={styles.rememberBtn}
-          onPress={() => handleGrade('remembered')}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="checkmark-circle" size={19} color="#FFFFFF" />
-          <Text style={styles.rememberBtnText}>已记住</Text>
-          <Text style={styles.rememberBtnSub}>标记为已掌握</Text>
-        </TouchableOpacity>
+      {/* 右下角浮动「已记住」按钮 (上报 type=4) */}
+      <TouchableOpacity
+        style={[styles.rememberFab, { bottom: bottomBarHeight + 16 }]}
+        onPress={() => handleGrade('remembered')}
+        activeOpacity={0.85}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      >
+        <View style={styles.rememberFabIcon}>
+          <Ionicons name="checkmark" size={16} color={Colors.success} />
+        </View>
+        <Text style={styles.rememberFabText}>已记住</Text>
+      </TouchableOpacity>
 
+      {/* 底部记忆反馈按钮 */}
+      <View
+        style={styles.bottomBar}
+        onLayout={(e) => {
+          const h = e.nativeEvent.layout.height;
+          if (h > 0) setBottomBarHeight(h);
+        }}
+      >
         <View style={styles.gradeRow}>
         <TouchableOpacity
           style={[styles.gradeBtn, styles.gradeAgain]}
@@ -364,6 +405,7 @@ const styles = StyleSheet.create({
   },
   scrollInner: {
     padding: 16,
+    paddingBottom: 88,
     flexGrow: 1,
     justifyContent: 'center',
   },
@@ -513,41 +555,48 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: Colors.card,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
   },
-  // 已记住 (type=4)
-  rememberBtn: {
+  // 右下角浮动「已记住」(type=4)
+  rememberFab: {
+    position: 'absolute',
+    right: 18,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    height: 46,
-    borderRadius: 12,
-    gap: 8,
+    gap: 7,
+    paddingLeft: 8,
+    paddingRight: 18,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: Colors.success,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
     shadowColor: Colors.success,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.38,
+    shadowRadius: 12,
+    elevation: 7,
   },
-  rememberBtnText: {
+  rememberFabIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  rememberFabText: {
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  rememberBtnSub: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 11,
-    fontWeight: '600',
+    letterSpacing: 0.4,
   },
   gradeRow: {
     flexDirection: 'row',
-    marginTop: 10,
     gap: 10,
   },
   gradeBtn: {
