@@ -20,7 +20,7 @@ interface BookSelectScreenProps {
 }
 
 export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }) => {
-  const { isLoggedIn, loadPackWords, currentPack, revertToLocal } = useProgress();
+  const { isLoggedIn, loadPackWords, currentPack, revertToLocal, setInstalledPack } = useProgress();
   const [packs, setPacks] = useState<RemotePack[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingPackId, setLoadingPackId] = useState<number | null>(null);
@@ -52,6 +52,15 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
 
     setLoadingPackId(pack.id);
     try {
+      // 「我的卡组」里还没有它 -> 属于本次新安装，需要通知首页刷新卡组列表
+      let isNewInstall = false;
+      try {
+        const { packs: myPacks } = await packLibrary.fetchMyPacks({ start: 0, limit: 100 });
+        isNewInstall = !myPacks.some((p) => Number(p.id) === Number(pack.id));
+      } catch {
+        // 判断失败时按已安装处理，避免误触发首页的卡组同步等待
+      }
+
       // 尝试安装 (已安装会忽略错误)
       try {
         await packLibrary.installPack(pack.id, pack.name);
@@ -59,6 +68,8 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
         // 安装失败不影响加载 (可能已安装)
       }
       await loadPackWords(pack);
+      // 新安装的卡组交给首页去刷新「我的卡组」，并等待服务端复制完子卡组
+      if (isNewInstall) setInstalledPack(pack);
       navigation.goBack();
     } catch (e: any) {
       Alert.alert('加载词库失败', e?.message || '请稍后重试');

@@ -477,7 +477,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const exportProgressData = (): string => JSON.stringify(state, null, 2);
 
-  // 加载远程词库
+  // 加载远程词库（同时切换当前卡组，保持与首页「我的卡组」一致）
   const loadPackWords = useCallback(async (pack: RemotePack) => {
     setIsLoadingWords(true);
     try {
@@ -485,14 +485,17 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (remoteWords.length > 0) {
         setWords(remoteWords);
         setWordSource('remote');
-        const cp = { id: pack.id, name: pack.name };
-        setCurrentPack(cp);
-        await AsyncStorage.setItem(PACK_KEY, JSON.stringify(cp));
       }
+      // 词库为空也要切换卡组，否则用户在界面看不到任何反馈
+      const cp = { id: pack.id, name: pack.name };
+      setCurrentPack(cp);
+      // 复用首页顶部「我的卡组」的当前卡组状态（内存 + 本地记忆一起更新）
+      setCurrentTopPack(pack);
+      await AsyncStorage.setItem(PACK_KEY, JSON.stringify(cp));
     } finally {
       setIsLoadingWords(false);
     }
-  }, []);
+  }, [setCurrentTopPack]);
 
   const revertToLocal = useCallback(() => {
     setWords(localWords);

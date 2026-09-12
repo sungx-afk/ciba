@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -23,12 +23,30 @@ interface ProfileScreenProps {
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const { user: authUser, isLoggedIn: authLoggedIn, logout: authLogout } = useAuth();
-  const { state, stats, updateSettings, resetProgress, exportProgressData, user: progressUser, isLoggedIn: progressLoggedIn, logout: progressLogout, currentPack, wordSource } = useProgress();
+  const { state, stats, updateSettings, resetProgress, exportProgressData, user: progressUser, isLoggedIn: progressLoggedIn, logout: progressLogout, currentPack, wordSource, currentTopPack, readRememberedTopPack } = useProgress();
 
   const user = authUser || progressUser;
   const isLoggedIn = authLoggedIn || progressLoggedIn;
 
   const [logoutVisible, setLogoutVisible] = useState(false);
+
+  // 当前使用的词库: 与首页顶部「我的卡组」共用同一份 currentTopPack
+  const [rememberedPackName, setRememberedPackName] = useState<string | null>(null);
+
+  // 还没进过首页时 currentTopPack 为空，先用本地记住的卡组名占位
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const remembered = await readRememberedTopPack();
+      if (alive) setRememberedPackName(remembered?.name || null);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [readRememberedTopPack, currentTopPack?.id]);
+
+  const activePackName =
+    currentTopPack?.name || rememberedPackName || currentPack?.name || '本地词库 (TOEFL 意群)';
 
   // 手机号脱敏
   const maskMobile = (m?: string) => {
@@ -146,11 +164,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
             <Ionicons name="library-outline" size={20} color={Colors.primary} />
             <View style={styles.packInfo}>
               <Text style={styles.actionLabel}>切换词库</Text>
-              {currentPack && (
-                <Text style={styles.settingDesc} numberOfLines={1}>
-                  当前: {currentPack.name}
-                </Text>
-              )}
+              <Text style={styles.settingDesc} numberOfLines={1}>
+                当前: {activePackName}
+              </Text>
             </View>
           </View>
           <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
