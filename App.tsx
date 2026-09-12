@@ -21,6 +21,21 @@ import { RootNavigator } from './src/navigation/RootNavigator';
 import { Colors } from './src/theme/colors';
 import { addBootLog, getBootLogs, subscribeBootLog, LogEntry } from './src/utils/crashGuard';
 
+/**
+ * 诊断浮窗开关。
+ * - 默认：仅开发环境（__DEV__）显示，正式打包自动隐藏。
+ * - 环境变量可强制覆盖（无需改代码）：
+ *   EXPO_PUBLIC_SHOW_DIAGNOSTIC=true  → 始终显示
+ *   EXPO_PUBLIC_SHOW_DIAGNOSTIC=false → 始终隐藏（例如导出商店截图时）
+ * - 想彻底去掉：把下方 <DiagnosticBadge /> 那一行删除即可。
+ */
+const SHOW_DIAGNOSTIC = (() => {
+  const env = process.env.EXPO_PUBLIC_SHOW_DIAGNOSTIC;
+  if (env === 'true') return true;
+  if (env === 'false') return false;
+  return __DEV__;
+})();
+
 // 尝试安全引入并隐藏原生 SplashScreen（防止闪屏遮挡主界面导致白屏）
 let ExpoSplashScreen: any = null;
 try {
@@ -277,7 +292,7 @@ export default function App() {
             <StatusBar style="dark" />
             <View style={styles.appContainer}>
               <RootNavigator />
-              <DiagnosticBadge />
+              {SHOW_DIAGNOSTIC ? <DiagnosticBadge /> : null}
             </View>
           </ProgressProvider>
         </AuthProvider>
