@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
+import { useAuth } from '../context/AuthContext';
 import { packLibrary, RemotePack } from '../services/packLibrary';
 import { Word } from '../types';
 import { Colors, getCategoryColor } from '../theme/colors';
@@ -44,6 +45,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const {
     stats,
     isLoggedIn,
+    user,
     currentPack,
     todayWords,
     todayWordsTotal,
@@ -56,6 +58,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     installedPack,
     setInstalledPack,
   } = useProgress();
+
+  // 登录态恢复中（避免未登录提示闪一下）
+  const { isLoading: authLoading } = useAuth();
 
   // 顶部切换: 我的卡组 (/anki/pack.json, parentId = 0)
   const [topPacks, setTopPacks] = useState<RemotePack[]>([]);
@@ -78,6 +83,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const marketPromptedRef = useRef(false);
   // 刚安装的卡组 id（服务端在后台线程复制子卡组，需要轮询等待）
   const justInstalledRef = useRef<number | null>(null);
+  // 已按该账号拉取过卡组（登录/切换账号时重新拉取）
+  const loadedUserIdRef = useRef<string | null>(null);
   // 子卡组加载代次，避免旧请求覆盖新结果
   const subLoadGenRef = useRef(0);
 
@@ -196,18 +203,25 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     }
   }, []);
 
+  // 登录成功后（或切换账号后）用最新登录信息重新拉取我的卡组
   useEffect(() => {
+    if (!isLoggedIn) {
+      loadedUserIdRef.current = null; // 退出登录后允许再次登录时重新拉取
+      // 清空上一账号残留的卡组数据
+      setTopPacks([]);
+      setSelectedTop(null);
+      setSubPacks([]);
+      setSubTotal(0);
+      setActiveSub(null);
+      setLoadingPacks(false); // 未登录时不发请求，需手动结束 loading
+      return;
+    }
+    const uid = String((user as any)?.id ?? '');
+    if (loadedUserIdRef.current === uid) return; // 同一账号避免重复请求
+    loadedUserIdRef.current = uid;
     loadTopPacks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 登录成功后自动重新加载卡组
-  useEffect(() => {
-    if (isLoggedIn && topPacks.length === 0 && !loadingPacks) {
-      loadTopPacks();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoggedIn]);
+  }, [isLoggedIn, (user as any)?.id]);
 
   // 切换顶部卡组时重新拉取其分类卡组
   useEffect(() => {
@@ -595,62 +609,107 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     <View>
       {/* 今日学习看板卡片 */}
       <View style={styles.dashboardCard}>
-        <View style={styles.dashHeader}>
-          <View style={styles.dashTitleWrap}>
-            <Text style={styles.dashTitle}>今日学习</Text>
-            <Text style={styles.dashSubtitle}>
-              已学 {stats.todayLearnedCount} / 目标 {stats.dailyGoal} 词
-            </Text>
+        {authLoading ? (
+          /* 登录状态读取中 */
+          <View style={styles.loginStateWrap}>
+            <ActivityIndicator size="small" color={Colors.primary} />
+            <Text style={styles.loginStateDesc}>正在读取登录状态…</Text>
           </View>
-          <View style={styles.dashGoalPercent}>
-            <Text style={styles.dashPercentText}>{Math.round(todayGoalProgress * 100)}%</Text>
-          </View>
-        </View>
+        ) : !isLoggedIn ? (
+          /* 未登录状态 */
+          <>
+            <View style={styles.dashHeader}>
+              <View style={styles.dashTitleWrap}>
+                <Text style={styles.dashTitle}>今日学习</Text>
+                <Text style={styles.dashSubtitle}>未登录，登录后即可开始今日学习</Text>
+              </View>
+              <View style={styles.unloginTag}>
+                <Ionicons name="person-outline" size={13} color={Colors.textMuted} />
+                <Text style={styles.unloginTagText}>未登录</Text>
+              </View>
+            </View>
 
-        <View style={styles.dashProgressTrack}>
-          <ProgressBar progress={todayGoalProgress} height={8} color={Colors.primary} />
-        </View>
+            <View style={styles.loginStateWrap}>
+              <View style={styles.loginStateIcon}>
+                <Ionicons name="log-in-outline" size={30} color={Colors.textMuted} />
+              </View>
+              <Text style={styles.loginStateTitle}>登录后开始今日学习</Text>
+              <Text style={styles.loginStateDesc}>
+                登录后可获取在线卡组的今日学习单词，并同步学习进度
+              </Text>
+              <TouchableOpacity
+                style={styles.loginMainBtn}
+                onPress={() => navigation.navigate('Login')}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="log-in-outline" size={17} color="#FFFFFF" />
+                <Text style={styles.loginMainBtnText}>立即登录</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          /* 已登录状态 */
+          <>
+            <View style={styles.dashHeader}>
+              <View style={styles.dashTitleWrap}>
+                <Text style={styles.dashTitle}>今日学习</Text>
+                <Text style={styles.dashSubtitle}>
+                  已学 {stats.todayLearnedCount} / 目标 {stats.dailyGoal} 词
+                </Text>
+              </View>
+              <View style={styles.dashGoalPercent}>
+                <Text style={styles.dashPercentText}>{Math.round(todayGoalProgress * 100)}%</Text>
+              </View>
+            </View>
 
-        <View style={styles.dashMetricsRow}>
-          <View style={styles.metricItem}>
-            <Text style={styles.metricNumber}>{todayDue}</Text>
-            <Text style={styles.metricLabel}>今日待学</Text>
-          </View>
-          <View style={styles.metricDivider} />
-          <View style={styles.metricItem}>
-            <Text style={styles.metricNumber}>{stats.masteredCount}</Text>
-            <Text style={styles.metricLabel}>已掌握</Text>
-          </View>
-          <View style={styles.metricDivider} />
-          <View style={styles.metricItem}>
-            <Text style={styles.metricNumber}>{selectedTop?.card_count ?? stats.totalWords}</Text>
-            <Text style={styles.metricLabel}>卡组词数</Text>
-          </View>
-        </View>
+            <View style={styles.dashProgressTrack}>
+              <ProgressBar progress={todayGoalProgress} height={8} color={Colors.primary} />
+            </View>
 
-        <View style={styles.dashActionRow}>
-          <TouchableOpacity
-            style={[styles.actionBtn, styles.primaryBtn]}
-            onPress={() => handleStartStudy()}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="flash" size={18} color="#FFFFFF" />
-            <Text style={styles.primaryBtnText}>开始背词</Text>
-          </TouchableOpacity>
+            <View style={styles.dashMetricsRow}>
+              <View style={styles.metricItem}>
+                <Text style={styles.metricNumber}>{todayDue}</Text>
+                <Text style={styles.metricLabel}>今日待学</Text>
+              </View>
+              <View style={styles.metricDivider} />
+              <View style={styles.metricItem}>
+                <Text style={styles.metricNumber}>{stats.masteredCount}</Text>
+                <Text style={styles.metricLabel}>已掌握</Text>
+              </View>
+              <View style={styles.metricDivider} />
+              <View style={styles.metricItem}>
+                <Text style={styles.metricNumber}>
+                  {selectedTop?.card_count ?? stats.totalWords}
+                </Text>
+                <Text style={styles.metricLabel}>卡组词数</Text>
+              </View>
+            </View>
 
-          {stats.dueTodayCount > 0 ? (
-            <TouchableOpacity
-              style={[styles.actionBtn, styles.reviewBtn]}
-              onPress={() => navigation.navigate('Flashcard', { onlyDue: true })}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="repeat" size={18} color={Colors.primary} />
-              <Text style={styles.reviewBtnText}>复习待办 ({stats.dueTodayCount})</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
+            <View style={styles.dashActionRow}>
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.primaryBtn]}
+                onPress={() => handleStartStudy()}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="flash" size={18} color="#FFFFFF" />
+                <Text style={styles.primaryBtnText}>开始背词</Text>
+              </TouchableOpacity>
 
-        {renderTodayWords()}
+              {stats.dueTodayCount > 0 ? (
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.reviewBtn]}
+                  onPress={() => navigation.navigate('Flashcard', { onlyDue: true })}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="repeat" size={18} color={Colors.primary} />
+                  <Text style={styles.reviewBtnText}>复习待办 ({stats.dueTodayCount})</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            {renderTodayWords()}
+          </>
+        )}
       </View>
 
       {/* 分类卡组标题 */}
@@ -674,11 +733,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   );
 
   const renderEmpty = () => {
-    if (loadingPacks || loadingSubs) {
+    if (authLoading || loadingPacks || loadingSubs) {
       return (
         <View style={styles.centerPadding}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>正在加载卡组...</Text>
+        </View>
+      );
+    }
+    // 未登录: 登录入口已放在「今日学习」卡片，这里只做无按钮的占位提示
+    if (!isLoggedIn) {
+      return (
+        <View style={styles.lockedBox}>
+          <Ionicons name="lock-closed-outline" size={26} color={Colors.textMuted} />
+          <Text style={styles.lockedTitle}>分类卡组已锁定</Text>
+          <Text style={styles.lockedDesc}>在上方「今日学习」中登录后即可查看</Text>
         </View>
       );
     }
@@ -690,15 +759,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           <TouchableOpacity style={styles.retryBtn} onPress={reloadAll} activeOpacity={0.8}>
             <Text style={styles.retryText}>重试</Text>
           </TouchableOpacity>
-          {!isLoggedIn ? (
-            <TouchableOpacity
-              style={[styles.retryBtn, styles.loginBtn]}
-              onPress={() => navigation.navigate('Login')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.retryText}>去登录</Text>
-            </TouchableOpacity>
-          ) : null}
         </View>
       );
     }
@@ -1024,6 +1084,69 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
+  },
+  // 未登录标记
+  unloginTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.divider,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+  },
+  unloginTagText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.textMuted,
+  },
+  // 未登录引导区
+  loginStateWrap: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 2,
+  },
+  loginStateIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: Colors.divider,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  loginStateTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  loginStateDesc: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginTop: 6,
+  },
+  loginMainBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 18,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  loginMainBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
   dashPercentText: {
     fontSize: 13,
@@ -1355,6 +1478,30 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
+  // 未登录时的分类卡组占位（无按钮，避免与上方登录入口重复）
+  lockedBox: {
+    marginHorizontal: 16,
+    marginTop: 4,
+    paddingVertical: 26,
+    paddingHorizontal: 20,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: Colors.border,
+    backgroundColor: Colors.card,
+    alignItems: 'center',
+    gap: 8,
+  },
+  lockedTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+  },
+  lockedDesc: {
+    fontSize: 12,
+    color: Colors.textMuted,
+  },
+
   // 空态 / 加载
   centerPadding: {
     paddingTop: 60,
@@ -1382,9 +1529,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     backgroundColor: Colors.primary,
     borderRadius: 8,
-  },
-  loginBtn: {
-    backgroundColor: Colors.pinwheelBlue,
   },
   retryText: {
     color: '#FFFFFF',

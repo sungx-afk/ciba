@@ -4,6 +4,7 @@ import rawWordsData from '../data/words.json';
 import { Word, WordProgress, ProgressState, LearningStats } from '../types';
 import { authService, RemoteUser } from '../services/auth';
 import { packLibrary, RemotePack } from '../services/packLibrary';
+import { useAuth } from '../context/AuthContext';
 
 const STORAGE_KEY = '@ciba_progress_v1';
 const PACK_KEY = '@ciba_current_pack';
@@ -124,6 +125,9 @@ interface ProgressContextValue {
 const ProgressContext = createContext<ProgressContextValue | null>(null);
 
 export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // 与全局登录态(AuthProvider)保持同步：登录/退出后立即反映到各页面的 isLoggedIn
+  const auth = useAuth();
+
   const [state, setState] = useState<ProgressState>(defaultState);
   const [isLoaded, setIsLoaded] = useState(false);
 
@@ -150,6 +154,11 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // 认证
   const [user, setUser] = useState<RemoteUser | null>(null);
 
+  // 登录态以 AuthProvider 为准：登录成功 / 退出登录 / 启动时恢复都会同步到这里
+  useEffect(() => {
+    setUser(auth.user ? (auth.user as unknown as RemoteUser) : null);
+  }, [auth.user]);
+
   // 初始化: 恢复登录态 + 恢复上次词库
   useEffect(() => {
     (async () => {
@@ -163,7 +172,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           } catch (_) {}
         }
         const restored = await authService.restore();
-        if (restored) setUser(restored);
+        if (restored && !auth.user) setUser(restored);
       } catch (e) {
         console.warn('[ProgressStore] authService.restore failed', e);
       }
