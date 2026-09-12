@@ -227,6 +227,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   );
 
   /**
+   * 只刷新当前父级卡组自身的统计（总词数 / 已掌握）。
+   * 顶部「今日学习」卡片的这两个数字取父级卡组的全量口径
+   * （子卡组列表是分页拉取的，逐条累加会偏少），所以学完返回后要重新取一次。
+   * 走「我的卡组」列表接口，避免详情接口的浏览数自增副作用。
+   */
+  const refreshSelectedTopStats = useCallback(
+    async (topId: number) => {
+      try {
+        const { packs } = await packLibrary.fetchMyPacks({ start: 0, limit: 50 });
+        const fresh = packs.find((p) => Number(p.id) === Number(topId));
+        const prev = currentTopPackRef.current;
+        // 期间用户可能已切换卡组，不匹配则放弃
+        if (!fresh || !prev || Number(prev.id) !== Number(fresh.id)) return;
+        setSelectedTop({
+          ...prev,
+          card_count: fresh.card_count ?? prev.card_count,
+          remembered_card_count: fresh.remembered_card_count ?? prev.remembered_card_count,
+        });
+      } catch {
+        // 静默失败: 保留原有统计数据
+      }
+    },
+    [setSelectedTop]
+  );
+
+  /**
    * 刚安装的卡组: 服务端在后台线程逐个复制子卡组，
    * 这里轮询 /anki/pack.json?parentId=xxx 直到数量连续两次一致（视为复制完成）。
    */
@@ -503,7 +529,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   }, [isLoggedIn, activeSub?.id, selectedTop?.name, loadReviewWords]);
 
   /**
-   * 从闪卡页学完返回时静默刷新：分类卡组统计（今日已学/已掌握）+ 今日单词 + 复习待办，
+   * 从闪卡页学完返回时静默刷新：父级卡组统计 + 分类卡组统计 + 今日单词 + 复习待办，
    * 保证卡片上的数字是学完之后的最新数据（首次聚焦跳过，避免重复请求）。
    */
   const focusedOnceRef = useRef(false);
@@ -518,6 +544,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       if (!top) return;
       // 保持已加载的分页长度，只静默替换最新数据
       loadSubPacks(top.id, 0, Math.max(SUB_PAGE_SIZE, subPackCount), true);
+      refreshSelectedTopStats(top.id);
       if (pack) {
         loadTodayWords(pack.id, {
           start: 0,
@@ -528,7 +555,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         }).catch(() => {});
         loadReviewWords(pack, top.name || '');
       }
-    }, [isLoggedIn, loadSubPacks, loadTodayWords, loadReviewWords])
+    }, [isLoggedIn, loadSubPacks, refreshSelectedTopStats, loadTodayWords, loadReviewWords])
   );
 
   /** 点击分类卡组: 拉取今日学习单词列表 */
@@ -650,27 +677,35 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   };
 
   /**
-   * 汇总下面「分类卡组」列表里的数据（与每个子卡组卡片显示的数字同源）:
-   *   整体词数 / 已掌握 / 今日任务 / 今日已学
-   * 服务端 remembered_card_count 不实时更新，叠加本地学习增量后再统计
+   * 整体数据（覆盖当前父卡组下的全部分类卡组）:
+   *   总词数 / 已掌握 直接取父级卡组的统计，因为下面的子卡组列表是分页拉取的，
+   *   逐条累加只算到已加载的部分，数字会偏小。
+   *   父级已掌握由服务端汇总子卡组维护，再叠加本地学习增量（未刷新前的乐观值）。
+   * 今日任务 / 今日已学 仍按已加载子卡组累加，用于「分类卡组」标题旁的提示。
    */
   const packAgg = useMemo(() => {
-    let total = 0;
-    let remembered = 0;
+    let loadedTotal = 0;
+    let loadedRemembered = 0;
+    let loadedDelta = 0;
     let todayTotal = 0;
     let todayLearned = 0;
     for (const p of subPacks) {
       const t = p.card_count || 0;
       const d = packMasteredDelta[p.id] || 0;
       const dayTotal = p.today_card_count || 0;
-      total += t;
-      remembered += Math.max(0, Math.min(t, (p.remembered_card_count || 0) + d));
+      loadedTotal += t;
+      loadedDelta += d;
+      loadedRemembered += Math.max(0, Math.min(t, (p.remembered_card_count || 0) + d));
       todayTotal += dayTotal;
       todayLearned += Math.min(p.today_learned_card_count || 0, dayTotal);
     }
-    if (!total) total = selectedTop?.card_count || 0;
+
+    // 父级卡组统计为全量口径（已覆盖未加载到的分页），取较大值兜底更稳妥
+    const total = Math.max(selectedTop?.card_count || 0, loadedTotal);
+    const parentRemembered = selectedTop?.remembered_card_count || 0;
+    const remembered = Math.min(total, Math.max(parentRemembered + loadedDelta, loadedRemembered));
     return { total, remembered, todayTotal, todayLearned };
-  }, [subPacks, packMasteredDelta, selectedTop?.card_count]);
+  }, [subPacks, packMasteredDelta, selectedTop?.card_count, selectedTop?.remembered_card_count]);
 
   /** 整体掌握进度（当前卡组下所有分类卡组） */
   const masteryProgress = packAgg.total > 0 ? Math.min(1, packAgg.remembered / packAgg.total) : 0;
@@ -946,7 +981,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
               </View>
             </View>
 
-            {/* 整体掌握进度: 取自下方分类卡组的合计 */}
+            {/* 整体掌握进度: 词数/已掌握取自父级卡组，分类卡组数取子卡组列表接口的 total */}
             <View style={styles.dashProgressTrack}>
               <ProgressBar progress={masteryProgress} height={8} color={Colors.primary} />
             </View>
@@ -955,7 +990,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
                 已掌握 {packAgg.remembered}/{packAgg.total} 词
               </Text>
               <Text style={styles.dashProgressMetaText}>
-                共 {subPacks.length} 个分类卡组
+                共 {subTotal || subPacks.length} 个分类卡组
               </Text>
             </View>
 
