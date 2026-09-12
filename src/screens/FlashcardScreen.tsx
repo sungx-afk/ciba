@@ -7,14 +7,28 @@ import {
   SafeAreaView,
   ScrollView,
   StatusBar,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
+import { packLibrary } from '../services/packLibrary';
 import { Word } from '../types';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { pronounceWord } from '../utils/speech';
 import { Header } from '../components/Header';
 import { ProgressBar } from '../components/ProgressBar';
+
+/** 今日学习单词一次拉取的数量（与首页保持一致） */
+const TODAY_WORD_LIMIT = 50;
+/** learn-by-menu 的卡片状态过滤：0 未学 / 1 学习中 / 4 已记住 */
+const TODAY_WORD_TYPES = [0, 1, 4];
+
+/** 同一父卡组下的兄弟卡组（用于「继续学习下一个卡组」） */
+interface SiblingPack {
+  id: number;
+  name: string;
+}
 
 interface FlashcardScreenProps {
   route: any;
@@ -22,13 +36,82 @@ interface FlashcardScreenProps {
 }
 
 export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigation }) => {
-  const { category, subCategory, singleWordId, onlyDue, filter, wordIds, title } =
-    route.params || {};
-  const { state, stats, recordReview, toggleBookmark, words, todayWords, packWords } =
-    useProgress();
+  const {
+    category,
+    subCategory,
+    singleWordId,
+    onlyDue,
+    filter,
+    wordIds,
+    title,
+    packCat,
+    packId,
+    packQueue,
+    packIndex,
+    hasMorePacks: hasMorePacksParam,
+  } = route.params || {};
+  const {
+    state,
+    stats,
+    recordReview,
+    toggleBookmark,
+    words,
+    todayWords,
+    packWords,
+    loadTodayWords,
+    currentTopPack,
+  } = useProgress();
+
+  /** 顶层卡组名: 继续学习下一个卡组时，作为新单词的 cat 标记 */
+  const topPackName = packCat || currentTopPack?.name || '';
+
+  /** 路由直接带过来的兄弟卡组列表（首页「开始背词」） */
+  const paramQueue: SiblingPack[] = Array.isArray(packQueue) ? packQueue : [];
+  /** 兄弟卡组列表: 用于「继续学习下一个卡组」 */
+  const [siblingPacks, setSiblingPacks] = useState<SiblingPack[]>(paramQueue);
+  /** 当前学习的是第几个兄弟卡组 */
+  const [packCursor, setPackCursor] = useState<number>(
+    typeof packIndex === 'number' && paramQueue.length ? packIndex : -1
+  );
+  /** 当前卡组名（继续学习下一个卡组时会更新） */
+  const [sessionTitle, setSessionTitle] = useState<string | undefined>(title);
+  /** 继续学习下一个卡组时，直接使用拉取好的单词队列 */
+  const [queueOverride, setQueueOverride] = useState<Word[] | null>(null);
+  const [switchingPack, setSwitchingPack] = useState(false);
+
+  /**
+   * 路由没带兄弟卡组（如从「单词列表」进入）时，按 packId 反查父卡组下的兄弟列表，
+   * 以便学完后也能继续学习下一个卡组。失败则静默降级为不显示该按钮。
+   */
+  useEffect(() => {
+    if (paramQueue.length || !packId) return;
+    const currentPackId = Number(packId);
+    if (!currentPackId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await packLibrary.fetchPackDetail(currentPackId);
+        const parentId = detail?.parent_id;
+        if (!parentId) return;
+        const { packs } = await packLibrary.fetchSubPacks(parentId, { start: 0, limit: 200 });
+        if (cancelled || !packs.length) return;
+        const index = packs.findIndex((p) => Number(p.id) === currentPackId);
+        setSiblingPacks(packs.map((p) => ({ id: p.id, name: p.name })));
+        setPackCursor(index);
+      } catch {
+        // 拿不到兄弟卡组就不提供「继续学习下一个卡组」
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paramQueue.length, packId]);
 
   // 构建当前复习/学习单词队列
   const rawQueue: Word[] = useMemo(() => {
+    // 在成果页「继续学习下一个卡组」时，队列已由下一个卡组直接给出
+    if (queueOverride && queueOverride.length) return queueOverride;
+
     // 今日学习单词 / 子卡组单词列表 (learn-by-menu 拉取的卡片)
     if (wordIds && wordIds.length) {
       const pool = new Map<number, Word>();
@@ -81,6 +164,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       return true;
     });
   }, [
+    queueOverride,
     category,
     subCategory,
     singleWordId,
@@ -128,8 +212,8 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
   const [showAnswer, setShowAnswer] = useState(false);
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [learnedInSessionCount, setLearnedInSessionCount] = useState(0);
-  // 底部操作栏高度，用于定位右下角浮动「已记住」按钮
-  const [bottomBarHeight, setBottomBarHeight] = useState(84);
+  // 正在上报本次评分，避免连点导致跳过多张卡片
+  const [grading, setGrading] = useState(false);
 
   const currentWord = studyQueue[currentIndex];
   const progressInfo = currentWord ? state.progressMap[currentWord.id] : undefined;
@@ -145,18 +229,28 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     }
   }, [currentIndex, sessionCompleted]);
 
-  // 处理评分（remembered = 已记住，上报 type=4）
-  const handleGrade = async (grade: 'again' | 'hard' | 'good' | 'easy' | 'remembered') => {
-    if (!currentWord) return;
+  /**
+   * 处理评分并翻到下一张卡片
+   * - hard        -> 服务端 type=1，间隔 1 天（「明天复习」）
+   * - remembered  -> 服务端 type=4，直接标记为已记住
+   */
+  const handleGrade = async (grade: 'hard' | 'remembered') => {
+    if (!currentWord || grading) return;
+    setGrading(true);
+    try {
+      await recordReview(currentWord.id, grade);
+      setLearnedInSessionCount((prev) => prev + 1);
 
-    await recordReview(currentWord.id, grade);
-    setLearnedInSessionCount((prev) => prev + 1);
-
-    if (currentIndex + 1 < studyQueue.length) {
-      setShowAnswer(false);
-      setCurrentIndex((prev) => prev + 1);
-    } else {
-      setSessionCompleted(true);
+      if (currentIndex + 1 < studyQueue.length) {
+        setShowAnswer(false);
+        setCurrentIndex((prev) => prev + 1);
+      } else {
+        setSessionCompleted(true);
+      }
+    } catch (e: any) {
+      Alert.alert('保存失败', e?.message || '学习结果上报失败，请重试');
+    } finally {
+      setGrading(false);
     }
   };
 
@@ -166,6 +260,63 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         accent: state.accent,
         rate: state.speechRate,
       });
+    }
+  };
+
+  /** 是否由首页带着兄弟卡组列表进入（只有这种场景才提供「继续学习下一个卡组」） */
+  const hasPackContext = siblingPacks.length > 0 && packCursor >= 0;
+  const nextPack: SiblingPack | undefined = hasPackContext
+    ? siblingPacks[packCursor + 1]
+    : undefined;
+  /** 列表还有未加载的兄弟卡组（分页），此时最后一个不等于真的没有了 */
+  const hasMorePacks = hasPackContext && !!hasMorePacksParam;
+
+  /**
+   * 继续学习下一个卡组:
+   * 依次向后查找第一个「今日有单词」的子卡组，直接切换队列继续学习。
+   */
+  const handleContinueNextPack = async () => {
+    if (switchingPack || !hasPackContext) return;
+    setSwitchingPack(true);
+    try {
+      let cursor = packCursor + 1;
+      let target: { pack: SiblingPack; words: Word[] } | null = null;
+
+      while (cursor < siblingPacks.length) {
+        const pack = siblingPacks[cursor];
+        const list = await loadTodayWords(pack.id, {
+          start: 0,
+          limit: TODAY_WORD_LIMIT,
+          types: TODAY_WORD_TYPES,
+          cat: topPackName,
+          sub: pack.name || '',
+        });
+        if (list.length) {
+          target = { pack, words: list };
+          break;
+        }
+        cursor += 1;
+      }
+
+      if (!target) {
+        setPackCursor(siblingPacks.length); // 标记已到末尾，按钮转为提示
+        Alert.alert('太棒了', '后面的卡组今日都没有待学习的单词');
+        return;
+      }
+
+      // 重置会话: 解锁排序、换队列、回到第一张卡片
+      lockedOrderRef.current = null;
+      setQueueOverride(target.words);
+      setPackCursor(cursor);
+      setSessionTitle(target.pack.name);
+      setCurrentIndex(0);
+      setShowAnswer(false);
+      setLearnedInSessionCount(0);
+      setSessionCompleted(false);
+    } catch (e: any) {
+      Alert.alert('加载失败', e?.message || '获取下一个卡组失败');
+    } finally {
+      setSwitchingPack(false);
     }
   };
 
@@ -220,6 +371,41 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
             </View>
           </View>
 
+          {/* 有下一个子卡组: 直接继续学习；已到末尾: 只给提示 */}
+          {nextPack ? (
+            <TouchableOpacity
+              style={[styles.continueBtn, switchingPack && styles.continueBtnDisabled]}
+              onPress={handleContinueNextPack}
+              activeOpacity={0.85}
+              disabled={switchingPack}
+            >
+              {switchingPack ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Ionicons name="arrow-forward-circle" size={22} color="#FFFFFF" />
+              )}
+              <View style={styles.continueBtnTextWrap}>
+                <Text style={styles.continueBtnText}>继续学习下一个卡组</Text>
+                <Text style={styles.continueBtnSub} numberOfLines={1} ellipsizeMode="tail">
+                  {nextPack.name}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          ) : hasPackContext ? (
+            <View style={styles.packEndHint}>
+              <Ionicons
+                name={hasMorePacks ? 'ellipsis-horizontal-circle-outline' : 'flag-outline'}
+                size={15}
+                color={Colors.textMuted}
+              />
+              <Text style={styles.packEndHintText}>
+                {hasMorePacks
+                  ? '本页卡组已学完，返回列表可继续学习更多卡组'
+                  : '已经是最后一个卡组啦，全部完成！'}
+              </Text>
+            </View>
+          ) : null}
+
           <TouchableOpacity
             style={styles.doneBtn}
             onPress={() => navigation.goBack()}
@@ -241,7 +427,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       
       {/* 顶部导航与进度 */}
       <Header
-        title={title || category || '背单词'}
+        title={sessionTitle || category || '背单词'}
         subtitle={`${currentIndex + 1} / ${studyQueue.length}`}
         onBack={() => navigation.goBack()}
         rightAction={{
@@ -329,63 +515,41 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         </TouchableOpacity>
       </ScrollView>
 
-      {/* 右下角浮动「已记住」按钮 (上报 type=4) */}
-      <TouchableOpacity
-        style={[styles.rememberFab, { bottom: bottomBarHeight + 16 }]}
-        onPress={() => handleGrade('remembered')}
-        activeOpacity={0.85}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      >
-        <View style={styles.rememberFabIcon}>
-          <Ionicons name="checkmark" size={16} color={Colors.success} />
-        </View>
-        <Text style={styles.rememberFabText}>已记住</Text>
-      </TouchableOpacity>
+      {/* 底部操作栏: 返回 / 明天复习(type=1) / 已记住(type=4) */}
+      <View style={styles.bottomBar}>
+        <View style={styles.actionRow}>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.backAction]}
+            onPress={() => navigation.goBack()}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="arrow-back" size={18} color={Colors.textSecondary} />
+            <Text style={[styles.actionBtnText, styles.backActionText]}>返回</Text>
+          </TouchableOpacity>
 
-      {/* 底部记忆反馈按钮 */}
-      <View
-        style={styles.bottomBar}
-        onLayout={(e) => {
-          const h = e.nativeEvent.layout.height;
-          if (h > 0) setBottomBarHeight(h);
-        }}
-      >
-        <View style={styles.gradeRow}>
-        <TouchableOpacity
-          style={[styles.gradeBtn, styles.gradeAgain]}
-          onPress={() => handleGrade('again')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.gradeBtnTitle, { color: Colors.pinwheelRed }]}>重来</Text>
-          <Text style={styles.gradeBtnSub}>&lt;10分钟</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.tomorrowAction, grading && styles.actionBtnDisabled]}
+            onPress={() => handleGrade('hard')}
+            activeOpacity={0.85}
+            disabled={grading}
+          >
+            <Ionicons name="time-outline" size={18} color={Colors.primary} />
+            <Text style={[styles.actionBtnText, styles.tomorrowActionText]}>明天复习</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.gradeBtn, styles.gradeHard]}
-          onPress={() => handleGrade('hard')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.gradeBtnTitle, { color: Colors.primary }]}>困难</Text>
-          <Text style={styles.gradeBtnSub}>1天</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.gradeBtn, styles.gradeGood]}
-          onPress={() => handleGrade('good')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.gradeBtnTitle, { color: Colors.pinwheelBlue }]}>一般</Text>
-          <Text style={styles.gradeBtnSub}>3天</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.gradeBtn, styles.gradeEasy]}
-          onPress={() => handleGrade('easy')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.gradeBtnTitle, { color: Colors.success }]}>容易</Text>
-          <Text style={styles.gradeBtnSub}>7天</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.rememberAction, grading && styles.actionBtnDisabled]}
+            onPress={() => handleGrade('remembered')}
+            activeOpacity={0.85}
+            disabled={grading}
+          >
+            {grading ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+            )}
+            <Text style={[styles.actionBtnText, styles.rememberActionText]}>已记住</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </SafeAreaView>
@@ -561,76 +725,55 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: Colors.border,
   },
-  // 右下角浮动「已记住」(type=4)
-  rememberFab: {
-    position: 'absolute',
-    right: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    paddingLeft: 8,
-    paddingRight: 18,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: Colors.success,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    shadowColor: Colors.success,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.38,
-    shadowRadius: 12,
-    elevation: 7,
-  },
-  rememberFabIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-  },
-  rememberFabText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0.4,
-  },
-  gradeRow: {
+  // 底部三个操作按钮: 返回 / 明天复习(type=1) / 已记住(type=4)
+  actionRow: {
     flexDirection: 'row',
     gap: 10,
   },
-  gradeBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 14,
+  actionBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 14,
     borderWidth: 1,
   },
-  gradeAgain: {
-    backgroundColor: Colors.pinwheelRed + '12',
-    borderColor: Colors.pinwheelRed + '30',
+  actionBtnDisabled: {
+    opacity: 0.6,
   },
-  gradeHard: {
-    backgroundColor: Colors.primary + '12',
-    borderColor: Colors.primary + '30',
-  },
-  gradeGood: {
-    backgroundColor: Colors.pinwheelBlue + '12',
-    borderColor: Colors.pinwheelBlue + '30',
-  },
-  gradeEasy: {
-    backgroundColor: Colors.success + '12',
-    borderColor: Colors.success + '30',
-  },
-  gradeBtnTitle: {
+  actionBtnText: {
     fontSize: 15,
     fontWeight: '800',
   },
-  gradeBtnSub: {
-    fontSize: 11,
+  backAction: {
+    flex: 0.85,
+    backgroundColor: Colors.background,
+    borderColor: Colors.border,
+  },
+  backActionText: {
     color: Colors.textSecondary,
-    marginTop: 3,
+  },
+  tomorrowAction: {
+    flex: 1.32,
+    backgroundColor: Colors.primary + '12',
+    borderColor: Colors.primary + '30',
+  },
+  tomorrowActionText: {
+    color: Colors.primary,
+  },
+  rememberAction: {
+    flex: 1.32,
+    backgroundColor: Colors.success,
+    borderColor: Colors.success,
+    shadowColor: Colors.success,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  rememberActionText: {
+    color: '#FFFFFF',
   },
   emptyContainer: {
     flex: 1,
@@ -729,6 +872,52 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
   },
+  // 继续学习下一个卡组
+  continueBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    width: '100%',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    backgroundColor: Colors.success,
+    marginBottom: 12,
+  },
+  continueBtnDisabled: {
+    opacity: 0.7,
+  },
+  continueBtnTextWrap: {
+    flexShrink: 1,
+    alignItems: 'flex-start',
+  },
+  continueBtnText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  continueBtnSub: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    opacity: 0.9,
+    marginTop: 2,
+  },
+  packEndHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 12,
+    paddingHorizontal: 12,
+  },
+  packEndHintText: {
+    flexShrink: 1,
+    fontSize: 13,
+    color: Colors.textMuted,
+    textAlign: 'center',
+  },
+
   doneBtnText: {
     color: '#FFFFFF',
     fontSize: 16,

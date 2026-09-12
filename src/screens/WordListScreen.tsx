@@ -23,7 +23,8 @@ type FilterType = 'all' | 'unlearned' | 'mastered' | 'bookmarked';
 
 export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigation }) => {
   const { category, subCategory, source, title: routeTitle } = route.params || {};
-  const { state, toggleBookmark, words, todayWords, packWords } = useProgress();
+  const { state, toggleBookmark, words, todayWords, packWords, todayWordsPackId, packWordsPackId } =
+    useProgress();
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
@@ -67,9 +68,12 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
 
   const handleStartStudy = () => {
     if (source === 'today' || source === 'pack') {
+      // 带上当前卡组 id，学完后可继续学习下一个子卡组
+      const packId = source === 'today' ? todayWordsPackId : packWordsPackId;
       navigation.navigate('Flashcard', {
         wordIds: filteredWords.map((w) => w.id),
         title,
+        packId: packId ?? undefined,
       });
       return;
     }

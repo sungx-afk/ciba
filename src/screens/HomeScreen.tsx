@@ -41,6 +41,17 @@ function mergePacks(prev: RemotePack[], next: RemotePack[]): RemotePack[] {
   return [...prev, ...next.filter((p) => !seen.has(p.id))];
 }
 
+/**
+ * 分类卡组是否已「全部记住」
+ * 服务端 remembered_card_count 不实时更新，叠加本地学习增量后再比较
+ */
+function isPackFullyRemembered(pack: RemotePack, delta = 0): boolean {
+  const total = pack.card_count || 0;
+  if (total <= 0) return false; // 空卡组不算已记住
+  const remembered = Math.max(0, Math.min(total, (pack.remembered_card_count || 0) + delta));
+  return remembered >= total;
+}
+
 export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const {
     stats,
@@ -78,6 +89,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   // 分类卡组列表 (/anki/pack.json?parentId = 父卡组 id)
   const [subPacks, setSubPacks] = useState<RemotePack[]>([]);
   const [subTotal, setSubTotal] = useState(0);
+  // 当前 subPacks 属于哪个父卡组（避免切换顶部卡组时用旧列表做默认选中）
+  const [subPacksParentId, setSubPacksParentId] = useState<number | null>(null);
   const [loadingSubs, setLoadingSubs] = useState(false);
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -102,6 +115,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   }, [currentTopPack]);
   // 子卡组加载代次，避免旧请求覆盖新结果
   const subLoadGenRef = useRef(0);
+  // 已自动选过默认分类卡组的父卡组 id（用户手动切换后不再覆盖）
+  const autoPickedPackRef = useRef<number | null>(null);
 
   // 顶部卡组下拉选择
   const selectorRef = useRef<View>(null);
@@ -124,6 +139,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         resetCurrentTopPack();
         setSubPacks([]);
         setSubTotal(0);
+        setSubPacksParentId(null);
         if (!marketPromptedRef.current && isLoggedIn) {
           marketPromptedRef.current = true;
           navigation.navigate('Market', { firstSetup: true });
@@ -175,6 +191,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       if (start === 0) resetPackMasteredDelta();
       setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
       setSubTotal(total);
+      setSubPacksParentId(parentId);
     } catch (e: any) {
       if (gen !== subLoadGenRef.current) return;
       setErrorMsg(e?.message || '加载分类卡组失败');
@@ -209,6 +226,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
         setSubPacks(packs);
         setSubTotal(total);
+        setSubPacksParentId(parentId);
         setPreparedCount(total);
 
         // 首个分类卡组也要已经有词，避免只建了卡组还没复制卡片
@@ -275,6 +293,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     if (!selectedTop) return;
     setSubPacks([]);
     setSubTotal(0);
+    setSubPacksParentId(null);
     setActiveSub(null);
     setShowAllToday(false);
     // 刚安装的卡组走轮询，等服务端把子卡组复制完
@@ -285,6 +304,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       loadSubPacks(selectedTop.id, 0);
     }
   }, [selectedTop?.id, loadSubPacks, loadSubPacksUntilReady]);
+
+  /**
+   * 闪卡页点「继续学习下一个卡组」后，store 里的今日单词卡组会变成下一个子卡组，
+   * 这里跟着同步高亮，避免返回首页后显示成上一个卡组的加载态。
+   */
+  useEffect(() => {
+    if (todayWordsPackId == null) return;
+    const matched = subPacks.find((p) => Number(p.id) === Number(todayWordsPackId));
+    if (!matched) return;
+    setActiveSub((prev) => (Number(prev?.id) === Number(matched.id) ? prev : matched));
+    setShowAllToday(false);
+  }, [todayWordsPackId, subPacks]);
 
   const reloadAll = useCallback(async () => {
     await loadTopPacks();
@@ -365,6 +396,45 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     [todayWordsPackId, todayWords, loadTodayWords, selectedTop?.name]
   );
 
+  /**
+   * 分类卡组列表加载完成后自动选中默认卡组（用户没手动点过时）:
+   *   ① 闪卡页「继续学习下一个卡组」后 store 里的卡组仍在该列表 -> 保持它
+   *   ② 第一个「未全部记住」的分类卡组
+   *   ③ 都已记住时，退而取第一个今日还有单词的分类卡组
+   * 同一父卡组只自动选一次，避免覆盖用户手动切换的结果。
+   */
+  useEffect(() => {
+    if (!selectedTop || subPacksParentId !== selectedTop.id) return;
+    if (!subPacks.length) return;
+    if (preparingPack) return; // 新安装卡组还在同步子卡组，等同步完再选
+    if (autoPickedPackRef.current === selectedTop.id) return;
+
+    const fromStudy =
+      todayWordsPackId != null
+        ? subPacks.find((p) => Number(p.id) === Number(todayWordsPackId))
+        : undefined;
+    const target =
+      fromStudy ||
+      subPacks.find((p) => !isPackFullyRemembered(p, packMasteredDelta[p.id] || 0)) ||
+      subPacks.find((p) => (p.today_card_count || 0) > 0);
+
+    autoPickedPackRef.current = selectedTop.id;
+    if (target) {
+      setActiveSub(target);
+      setShowAllToday(false);
+      // 已缓存该卡组的今日单词时直接复用，不会重复请求
+      ensureTodayWords(target);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedTop?.id,
+    subPacksParentId,
+    subPacks,
+    preparingPack,
+    todayWordsPackId,
+    ensureTodayWords,
+  ]);
+
   /** 点击分类卡组: 拉取今日学习单词列表 */
   const handleSelectSub = useCallback(
     async (pack: RemotePack) => {
@@ -430,15 +500,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           Alert.alert('太棒了', '该分类今日没有待学习的单词');
           return;
         }
+        // 把同一父卡组下的「兄弟卡组」一起带过去，学完当前卡组后可继续学下一个
+        const packIndex = subPacks.findIndex((p) => Number(p.id) === Number(target.id));
         navigation.navigate('Flashcard', {
           wordIds: list.map((w) => w.id),
           title: target.name,
+          // 当前子卡组 id + 顶层卡组名（继续学习下一个卡组时使用）
+          packId: target.id,
+          packCat: selectedTop?.name || '',
+          packQueue: subPacks.map((p) => ({ id: p.id, name: p.name })),
+          packIndex,
+          // 还有未加载的子卡组时，学完本页最后一个只提示、不误导
+          hasMorePacks: subTotal > subPacks.length,
         });
       } catch (e: any) {
         Alert.alert('加载失败', e?.message || '获取今日学习单词失败');
       }
     },
-    [ensureTodayWords, activeSub, subPacks, isLoggedIn, navigation]
+    [ensureTodayWords, activeSub, subPacks, subTotal, selectedTop?.name, isLoggedIn, navigation]
   );
 
   const handleOpenTodayList = () => {
@@ -468,7 +547,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
     // 正在加载，或列表还属于上一个分类卡组时显示 loading
     const isLoadingThis =
-      isLoadingTodayWords || (!!activeSub && todayWordsPackId !== activeSub.id);
+      isLoadingTodayWords ||
+      (!!activeSub && Number(todayWordsPackId) !== Number(activeSub.id));
     const visibleWords = showAllToday ? todayWords : todayWords.slice(0, TODAY_PREVIEW_COUNT);
 
     return (
