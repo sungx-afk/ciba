@@ -129,13 +129,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   activeOpacity={0.7}
                 >
                   <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
-                  <Text style={styles.vipButtonText}>{user?.vip ? '尊享会员' : '升级会员'}</Text>
+                  <Text style={styles.vipButtonText}>{user?.vip ? 'VIP 会员' : '升级会员'}</Text>
                 </TouchableOpacity>
               )}
             </View>
             <Text style={styles.userSub}>
               {isLoggedIn
-                ? (user?.mobile ? maskMobile(user.mobile) : user?.email || (user?.vip ? '尊享会员用户' : '学员用户'))
+                ? (user?.mobile ? maskMobile(user.mobile) : user?.email)
                 : '登录后可同步词书与多端学习进度'}
             </Text>
           </View>

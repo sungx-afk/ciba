@@ -202,20 +202,18 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     [state.progressMap]
   );
 
+  /** 点击某张卡片：从它在列表中的位置开始连续复习（后续不足时由复习页自动续拉） */
   const openWordDetail = useCallback(
     (item: Word) => {
-      navigation.navigate('Flashcard', {
-        singleWordId: item.id,
-        queue: words, // 服务端拉取的单词不在本地词库中，透传给详情页使用
+      const index = words.findIndex((w) => w.id === item.id);
+      navigation.navigate('BookmarkStudy', {
+        words,
+        startIndex: index < 0 ? 0 : index,
+        total,
       });
     },
-    [navigation, words]
+    [navigation, words, total]
   );
-
-  const handleStudyBookmarks = useCallback(() => {
-    if (!words.length) return;
-    navigation.navigate('Flashcard', { filter: 'bookmarked', queue: words });
-  }, [navigation, words]);
 
   const showEmptyState = !initialLoading && !errorMsg && words.length === 0;
 
@@ -224,14 +222,6 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
       <Header
         title="生词本"
         subtitle={initialLoading && !words.length ? '正在加载...' : `共 ${total} 个单词`}
-        rightAction={
-          words.length > 0
-            ? {
-                icon: 'play-circle',
-                onPress: handleStudyBookmarks,
-              }
-            : undefined
-        }
       />
 
       {/* 首次进入的加载态 */}

@@ -61,6 +61,8 @@ function cardToWord(card: any): Word {
     )
     .filter(Boolean);
 
+  const packageId = Number(card?.package_id) || Number(card?.packageId) || 0;
+
   return {
     id: Number(card?.id ?? note.id),
     word: note.name || card?.name || f[0] || '',
@@ -68,6 +70,8 @@ function cardToWord(card: any): Word {
     note: [phonetic, ...examples.map((e) => `· ${e}`)].filter(Boolean).join('\n'),
     cat: '',
     sub: '',
+    // 学习结果需要按卡片所属卡组上报，否则会落到当前选中的其它卡组
+    ...(packageId ? { packageId } : {}),
   };
 }
 

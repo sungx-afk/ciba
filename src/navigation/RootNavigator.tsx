@@ -11,6 +11,7 @@ import { BookmarksScreen } from '../screens/BookmarksScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { WordListScreen } from '../screens/WordListScreen';
 import { FlashcardScreen } from '../screens/FlashcardScreen';
+import { BookmarkStudyScreen } from '../screens/BookmarkStudyScreen';
 import { BookSelectScreen } from '../screens/BookSelectScreen';
 import { MarketScreen } from '../screens/MarketScreen';
 import { PurchaseScreen } from '../screens/PurchaseScreen';
@@ -102,6 +103,11 @@ export function RootNavigator() {
         <Stack.Screen
           name="Flashcard"
           component={FlashcardScreen}
+          options={{ animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
+          name="BookmarkStudy"
+          component={BookmarkStudyScreen}
           options={{ animation: 'slide_from_bottom' }}
         />
         <Stack.Screen name="BookSelect" component={BookSelectScreen} />
