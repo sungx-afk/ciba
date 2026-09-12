@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 
 const STORAGE_KEY = '@ciba_progress_v1';
 const PACK_KEY = '@ciba_current_pack';
+const TOP_PACK_KEY = '@ciba_selected_top_pack';
 
 const localWords: Word[] =
   Array.isArray((rawWordsData as any)?.words)
@@ -74,7 +75,10 @@ interface ProgressContextValue {
   // 学习进度
   state: ProgressState;
   stats: LearningStats;
-  recordReview: (wordId: number, grade: 'again' | 'hard' | 'good' | 'easy') => Promise<void>;
+  recordReview: (
+    wordId: number,
+    grade: 'again' | 'hard' | 'good' | 'easy' | 'remembered'
+  ) => Promise<void>;
   toggleBookmark: (wordId: number) => Promise<void>;
   updateSettings: (newSettings: Partial<Pick<ProgressState, 'dailyGoal' | 'accent' | 'autoPronounce' | 'speechRate'>>) => Promise<void>;
   resetProgress: () => Promise<void>;
@@ -115,6 +119,17 @@ interface ProgressContextValue {
   installedPack: RemotePack | null;
   setInstalledPack: (pack: RemotePack | null) => void;
 
+  // 本地学习导致的卡组「已掌握数量」变化量: packId -> delta
+  // 服务端 remembered_card_count 不会实时变化，用它做本地增量校正
+  packMasteredDelta: Record<number, number>;
+  resetPackMasteredDelta: () => void;
+
+  // 当前显示的顶层卡组（分类页顶部切换的那个），其它页面可直接读取
+  currentTopPack: RemotePack | null;
+  setCurrentTopPack: (pack: RemotePack | null) => void;
+  /** 读取上次记住的卡组（供启动/重新登录时优先选中） */
+  readRememberedTopPack: () => Promise<{ id: number; name: string } | null>;
+
   // 认证
   user: RemoteUser | null;
   isLoggedIn: boolean;
@@ -150,6 +165,11 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // 市场安装成功的卡组
   const [installedPack, setInstalledPack] = useState<RemotePack | null>(null);
+  // 各卡组已掌握数量的本地增量
+  const [packMasteredDelta, setPackMasteredDelta] = useState<Record<number, number>>({});
+
+  // 当前显示的顶层卡组
+  const [currentTopPack, setCurrentTopPackState] = useState<RemotePack | null>(null);
 
   // 认证
   const [user, setUser] = useState<RemoteUser | null>(null);
@@ -253,7 +273,10 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return p.nextReviewTime > 0 && p.nextReviewTime <= Date.now();
   };
 
-  const recordReview = async (wordId: number, grade: 'again' | 'hard' | 'good' | 'easy') => {
+  const recordReview = async (
+    wordId: number,
+    grade: 'again' | 'hard' | 'good' | 'easy' | 'remembered'
+  ) => {
     const now = Date.now();
     const today = getTodayString();
     const currentProg = state.progressMap[wordId] || {
@@ -294,7 +317,19 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
         newStatus = 'mastered';
         break;
+      case 'remembered':
+        // 手动标记为「已记住」(上报 type=4)，直接置为已掌握并给一个较长间隔
+        newInterval = currentProg.interval > 0 ? Math.round(currentProg.interval * 3) : 14;
+        nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
+        newStatus = 'mastered';
+        break;
     }
+
+    // 掌握状态变化: 新掌握 +1，从掌握变为其它 -1
+    const wasMastered = currentProg.status === 'mastered';
+    const isNowMastered = newStatus === 'mastered';
+    const masteredDelta =
+      isNowMastered && !wasMastered ? 1 : !isNowMastered && wasMastered ? -1 : 0;
 
     const updatedProg: WordProgress = {
       ...currentProg,
@@ -341,8 +376,17 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       todayWords.find((w) => w.id === wordId) ||
       packWords.find((w) => w.id === wordId);
     const packId = target?.packageId || currentPack?.id;
+
+    // 本地累计该卡组「已掌握数量」的变化量，供分类卡组列表等处实时刷新
+    if (packId && masteredDelta !== 0) {
+      setPackMasteredDelta((prev) => ({
+        ...prev,
+        [packId]: (prev[packId] || 0) + masteredDelta,
+      }));
+    }
+
     if (packId) {
-      const typeMap = { again: 0, hard: 1, good: 2, easy: 3 };
+      const typeMap = { again: 0, hard: 1, good: 2, easy: 3, remembered: 4 };
       packLibrary.markNoteRead(packId, wordId, typeMap[grade]);
     }
   };
@@ -386,8 +430,40 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       dailyGoal: state.dailyGoal,
       accent: state.accent,
     };
+    setPackMasteredDelta({});
     await saveState(cleared);
   };
+
+  /** 重新从服务端拉取卡组后调用：服务端数据即最新，清空本地增量避免重复累计 */
+  const resetPackMasteredDelta = useCallback(() => {
+    setPackMasteredDelta({});
+  }, []);
+
+  /** 切换当前显示的顶层卡组，并记住它（下次进入优先显示） */
+  const setCurrentTopPack = useCallback(async (pack: RemotePack | null) => {
+    setCurrentTopPackState(pack);
+    try {
+      if (pack) {
+        await AsyncStorage.setItem(TOP_PACK_KEY, JSON.stringify(pack));
+      } else {
+        await AsyncStorage.removeItem(TOP_PACK_KEY);
+      }
+    } catch (e) {
+      console.warn('[ProgressStore] save current top pack failed', e);
+    }
+  }, []);
+
+  /** 读取上次记住的卡组 id + name */
+  const readRememberedTopPack = useCallback(async (): Promise<{ id: number; name: string } | null> => {
+    try {
+      const raw = await AsyncStorage.getItem(TOP_PACK_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed?.id ? { id: Number(parsed.id), name: parsed.name } : null;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const exportProgressData = (): string => JSON.stringify(state, null, 2);
 
@@ -412,6 +488,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setWords(localWords);
     setWordSource('local');
     setCurrentPack(null);
+    setCurrentTopPack(null);
     setTodayWords([]);
     setTodayWordsTotal(0);
     setTodayWordsPackId(null);
@@ -568,6 +645,11 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     loadPackWordList,
     installedPack,
     setInstalledPack,
+    packMasteredDelta,
+    resetPackMasteredDelta,
+    currentTopPack,
+    setCurrentTopPack,
+    readRememberedTopPack,
     user,
     isLoggedIn: !!user,
     login,

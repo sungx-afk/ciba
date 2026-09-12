@@ -57,6 +57,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     loadPackWordList,
     installedPack,
     setInstalledPack,
+    packMasteredDelta,
+    resetPackMasteredDelta,
+    currentTopPack,
+    setCurrentTopPack,
+    readRememberedTopPack,
   } = useProgress();
 
   // 登录态恢复中（避免未登录提示闪一下）
@@ -64,8 +69,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
   // 顶部切换: 我的卡组 (/anki/pack.json, parentId = 0)
   const [topPacks, setTopPacks] = useState<RemotePack[]>([]);
-  const [selectedTop, setSelectedTop] = useState<RemotePack | null>(null);
   const [loadingPacks, setLoadingPacks] = useState(true);
+  // currentTopPack 由全局 store 持有，其它页面也能读到当前显示的是哪个卡组
+  const selectedTop = currentTopPack;
+  const setSelectedTop = setCurrentTopPack;
 
   // 分类卡组列表 (/anki/pack.json?parentId = 父卡组 id)
   const [subPacks, setSubPacks] = useState<RemotePack[]>([]);
@@ -85,6 +92,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const justInstalledRef = useRef<number | null>(null);
   // 已按该账号拉取过卡组（登录/切换账号时重新拉取）
   const loadedUserIdRef = useRef<string | null>(null);
+  // 上次记住的卡组名（列表加载完成前先占位显示）
+  const [lastPackName, setLastPackName] = useState<string | null>(null);
+  // 当前卡组的镜像，供异步回调里读取最新值
+  const currentTopPackRef = useRef<RemotePack | null>(null);
+  useEffect(() => {
+    currentTopPackRef.current = currentTopPack;
+  }, [currentTopPack]);
   // 子卡组加载代次，避免旧请求覆盖新结果
   const subLoadGenRef = useRef(0);
 
@@ -116,17 +130,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       }
       marketPromptedRef.current = false;
 
-      setSelectedTop((prev) => {
-        if (prev && packs.some((p) => p.id === prev.id)) return prev;
-        const saved = currentPack ? packs.find((p) => p.id === currentPack.id) : undefined;
-        return saved || packs[0] || null;
-      });
+      // 读取上次记住的卡组 id
+      const rememberedInfo = await readRememberedTopPack();
+      const rememberedId = rememberedInfo?.id ?? null;
+
+      // ① 本次已选过且仍存在 -> 保持
+      const prev = currentTopPackRef.current;
+      if (prev && packs.some((p) => p.id === prev.id)) return;
+      // ② 上次记住的卡组；不存在则 ③ currentPack；再退回 ④ 第一个
+      const remembered =
+        rememberedId !== null ? packs.find((p) => p.id === rememberedId) : undefined;
+      const saved = currentPack ? packs.find((p) => p.id === currentPack.id) : undefined;
+      setSelectedTop(remembered || saved || packs[0] || null);
     } catch (e: any) {
       setErrorMsg(e?.message || '加载我的卡组失败');
     } finally {
       setLoadingPacks(false);
     }
-  }, [currentPack?.id, isLoggedIn, navigation]);
+  }, [currentPack?.id, isLoggedIn, navigation, readRememberedTopPack, setCurrentTopPack]);
 
   /** 某个父卡组下的分类卡组 */
   const loadSubPacks = useCallback(async (parentId: number, start: number) => {
@@ -138,6 +159,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         limit: SUB_PAGE_SIZE,
       });
       if (gen !== subLoadGenRef.current) return;
+      // 重新拉取第一页时服务端数据即最新，清空本地「已掌握」增量
+      if (start === 0) resetPackMasteredDelta();
       setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
       setSubTotal(total);
     } catch (e: any) {
@@ -146,7 +169,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     } finally {
       if (gen === subLoadGenRef.current) setLoadingSubs(false);
     }
-  }, []);
+  }, [resetPackMasteredDelta]);
 
   /**
    * 刚安装的卡组: 服务端在后台线程逐个复制子卡组，
@@ -163,6 +186,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     setLoadingSubs(true);
     setPreparingPack(true);
     setPreparedCount(0);
+    resetPackMasteredDelta();
     try {
       for (let i = 0; i < maxAttempts; i++) {
         const { packs, total } = await packLibrary.fetchSubPacks(parentId, {
@@ -201,7 +225,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         setLoadingSubs(false);
       }
     }
-  }, []);
+  }, [resetPackMasteredDelta]);
+
+  // 启动时先读取上次记住的卡组名，用于占位显示
+  useEffect(() => {
+    (async () => {
+      const remembered = await readRememberedTopPack();
+      if (remembered?.name) setLastPackName(remembered.name);
+    })();
+  }, [readRememberedTopPack]);
 
   // 登录成功后（或切换账号后）用最新登录信息重新拉取我的卡组
   useEffect(() => {
@@ -497,7 +529,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const renderSubPack = ({ item }: { item: RemotePack }) => {
     const isActive = activeSub?.id === item.id;
     const total = item.card_count || 0;
-    const remembered = item.remembered_card_count || 0;
+    // 服务端 remembered_card_count 不实时更新，叠加本地学习产生的增量
+    const delta = packMasteredDelta[item.id] || 0;
+    const remembered = Math.max(0, Math.min(total, (item.remembered_card_count || 0) + delta));
     const todayCount = item.today_card_count || 0;
     const progress = total > 0 ? Math.min(1, remembered / total) : 0;
     const color = getCategoryColor(item.name);
@@ -585,7 +619,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
             <Text style={styles.brandTitle}>糍粑英语</Text>
             <View style={styles.selectorPill}>
               <Text style={styles.selectorPillText} numberOfLines={1}>
-                {selectedTop ? selectedTop.name : currentPack ? currentPack.name : '选择卡组'}
+                {selectedTop?.name ||
+                  lastPackName ||
+                  currentPack?.name ||
+                  '选择卡组'}
               </Text>
               <Ionicons name="chevron-down" size={13} color={Colors.primary} />
             </View>

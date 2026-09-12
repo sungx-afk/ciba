@@ -112,8 +112,8 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     }
   }, [currentIndex, sessionCompleted]);
 
-  // 处理评分
-  const handleGrade = async (grade: 'again' | 'hard' | 'good' | 'easy') => {
+  // 处理评分（remembered = 已记住，上报 type=4）
+  const handleGrade = async (grade: 'again' | 'hard' | 'good' | 'easy' | 'remembered') => {
     if (!currentWord) return;
 
     await recordReview(currentWord.id, grade);
@@ -298,6 +298,18 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
 
       {/* 底部记忆反馈按钮 */}
       <View style={styles.bottomBar}>
+        {/* 已记住: 上报 type=4 */}
+        <TouchableOpacity
+          style={styles.rememberBtn}
+          onPress={() => handleGrade('remembered')}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="checkmark-circle" size={19} color="#FFFFFF" />
+          <Text style={styles.rememberBtnText}>已记住</Text>
+          <Text style={styles.rememberBtnSub}>标记为已掌握</Text>
+        </TouchableOpacity>
+
+        <View style={styles.gradeRow}>
         <TouchableOpacity
           style={[styles.gradeBtn, styles.gradeAgain]}
           onPress={() => handleGrade('again')}
@@ -333,6 +345,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
           <Text style={[styles.gradeBtnTitle, { color: Colors.success }]}>容易</Text>
           <Text style={styles.gradeBtnSub}>7天</Text>
         </TouchableOpacity>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -499,13 +512,43 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   bottomBar: {
-    flexDirection: 'row',
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 10,
+    paddingTop: 10,
+    paddingBottom: 12,
     backgroundColor: Colors.card,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
+  },
+  // 已记住 (type=4)
+  rememberBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 46,
+    borderRadius: 12,
+    gap: 8,
+    backgroundColor: Colors.success,
+    shadowColor: Colors.success,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  rememberBtnText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  rememberBtnSub: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  gradeRow: {
+    flexDirection: 'row',
+    marginTop: 10,
+    gap: 10,
   },
   gradeBtn: {
     flex: 1,

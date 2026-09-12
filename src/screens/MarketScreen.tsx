@@ -7,7 +7,6 @@ import {
   RefreshControl,
   TouchableOpacity,
   SafeAreaView,
-  Image,
   ActivityIndicator,
   Alert,
 } from 'react-native';
@@ -22,6 +21,14 @@ interface MarketScreenProps {
   route: any;
   navigation: any;
 }
+
+/** 顶部帮助说明 */
+const HELP_LINES = [
+  '- 降低负荷：顺应大脑规律，将零散单词打包为语义组块，减轻记忆压力。',
+  '- 提升效率：提供多重语义线索，让回忆更顺畅，复习节奏更科学。',
+  '- 强化应用：结合真实场景学习，避免死记硬背，促进主动输出。',
+  '- 意义记忆：将机械背诵转化为意义记忆，实现词汇量的质变。',
+];
 
 /**
  * 卡组市场: 从市场选择 pack_type = qian_wen_cat 的卡组并安装到我的卡组
@@ -40,6 +47,8 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
   const [loading, setLoading] = useState(true);
   const [installingId, setInstallingId] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // 当前选中的词库
+  const [selectedPackId, setSelectedPackId] = useState<number | null>(null);
   // 待确认添加的卡组 (不为 null 时显示确认框)
   const [pendingPack, setPendingPack] = useState<RemotePack | null>(null);
 
@@ -83,21 +92,25 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
     [myPacks, setInstalledPack, navigation]
   );
 
-  /** 点击添加: 先弹出 ConfirmDialog 确认 */
-  const handleInstall = useCallback(
-    (pack: RemotePack) => {
-      if (!isLoggedIn) {
-        Alert.alert('需要登录', '请先登录后再添加卡组', [
-          { text: '取消', style: 'cancel' },
-          { text: '去登录', onPress: () => navigation.navigate('Login') },
-        ]);
-        return;
-      }
-      if (installingId !== null) return;
-      setPendingPack(pack);
-    },
-    [isLoggedIn, navigation, installingId]
-  );
+  /** 点击「确定」: 已添加则切换，未添加则弹确认框后安装 */
+  const handleConfirm = useCallback(() => {
+    const pack = packs.find((p) => p.id === selectedPackId);
+    if (!pack) return;
+
+    if (installedIds.has(pack.id)) {
+      handleSwitchToInstalled(pack.id);
+      return;
+    }
+    if (!isLoggedIn) {
+      Alert.alert('需要登录', '请先登录后再添加卡组', [
+        { text: '取消', style: 'cancel' },
+        { text: '去登录', onPress: () => navigation.navigate('Login') },
+      ]);
+      return;
+    }
+    if (installingId !== null) return;
+    setPendingPack(pack);
+  }, [packs, selectedPackId, installedIds, handleSwitchToInstalled, isLoggedIn, installingId, navigation]);
 
   /** 确认框点「确定」: 执行安装 */
   const confirmInstall = useCallback(async () => {
@@ -124,113 +137,116 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
     }
   }, [pendingPack, navigation, setInstalledPack]);
 
-  const renderCard = (item: RemotePack) => {
+  const renderPackCard = (item: RemotePack) => {
     const installed = installedIds.has(item.id);
-    const installing = installingId === item.id;
-    // 整张卡片主体也可点击，避免只点按钮时没反应
-    const onPressCard = () =>
-      installed ? handleSwitchToInstalled(item.id) : handleInstall(item);
-
+    const selected = selectedPackId === item.id;
     return (
-      <View key={String(item.id)} style={styles.card}>
-        <TouchableOpacity
-          style={styles.cardMain}
-          onPress={onPressCard}
-          disabled={installing}
-          activeOpacity={0.7}
-        >
-          <Image source={{ uri: item.preview }} style={styles.cover} resizeMode="cover" />
-          <View style={styles.info}>
-            <View style={styles.nameRow}>
-              <Text style={styles.name} numberOfLines={1}>
-                {item.name}
-              </Text>
-              {installed ? (
-                <Ionicons name="checkmark-circle" size={14} color={Colors.success} />
-              ) : null}
-            </View>
-            {item.summary ? (
-              <Text style={styles.summary} numberOfLines={2}>
-                {item.summary}
-              </Text>
-            ) : null}
-            <View style={styles.metaRow}>
-              <Text style={styles.metaText}>{item.card_count || 0} 词</Text>
-              <Text style={styles.metaText}>{item.install_times || 0} 人安装</Text>
-              <Text style={styles.priceText}>
-                {(item.price || 0) > 0 ? `¥${item.price}` : '免费'}
-              </Text>
-            </View>
-          </View>
-        </TouchableOpacity>
+      <TouchableOpacity
+        key={String(item.id)}
+        style={[styles.packCard, selected && styles.packCardSelected]}
+        onPress={() => setSelectedPackId(selected ? null : item.id)}
+        activeOpacity={0.75}
+      >
+        <Text style={[styles.packName, selected && styles.packNameSelected]} numberOfLines={2}>
+          {item.name}
+        </Text>
 
-        <TouchableOpacity
-          style={[styles.addBtn, installed && styles.addBtnDone]}
-          onPress={onPressCard}
-          disabled={installing}
-          activeOpacity={0.7}
-          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-        >
-          {installing ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <Text style={[styles.addBtnText, installed && styles.addBtnTextDone]}>
-              {installed ? '切换' : '添加'}
-            </Text>
-          )}
-        </TouchableOpacity>
-      </View>
+        <View style={styles.packMetaRow}>
+          <Text style={styles.packCount}>{item.card_count || 0} 词</Text>
+          {installed ? (
+            <View style={styles.installedTag}>
+              <Text style={styles.installedTagText}>已添加</Text>
+            </View>
+          ) : null}
+        </View>
+
+        {selected ? (
+          <View style={styles.checkBadge}>
+            <Ionicons name="checkmark" size={13} color="#FFFFFF" />
+          </View>
+        ) : null}
+      </TouchableOpacity>
     );
   };
+
+  const installing = installingId !== null;
+  const canConfirm = selectedPackId !== null && !installing;
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <Header
         title="卡组市场"
-        subtitle="从市场添加分类背单词卡组"
+        subtitle="选择需要的词库后点击确定"
         onBack={() => navigation.goBack()}
       />
 
-      {firstSetup ? (
-        <View style={styles.tipBanner}>
-          <Ionicons name="information-circle" size={18} color={Colors.primary} />
-          <Text style={styles.tipText}>
-            你还没有卡组，请先添加一个分类背单词卡组后才能使用
-          </Text>
-        </View>
-      ) : null}
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={loading} onRefresh={loadMarket} colors={[Colors.primary]} />
+        }
+      >
+        {firstSetup ? (
+          <View style={styles.tipBanner}>
+            <Ionicons name="information-circle" size={18} color={Colors.primary} />
+            <Text style={styles.tipText}>你还没有卡组，请先添加一个分类背单词卡组后才能使用</Text>
+          </View>
+        ) : null}
 
-      {loading ? (
-        <View style={styles.centerWrap}>
-          <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.centerText}>正在加载卡组市场...</Text>
+        {/* 帮助说明 */}
+        <View style={styles.helpCard}>
+          <Text style={styles.helpTitle}>英语单词分类记忆</Text>
+          {HELP_LINES.map((line) => (
+            <Text key={line} style={styles.helpLine}>
+              {line}
+            </Text>
+          ))}
+          <Text style={styles.helpPrompt}>请选择需要的词库</Text>
         </View>
-      ) : errorMsg ? (
-        <View style={styles.centerWrap}>
-          <Ionicons name="cloud-offline-outline" size={48} color={Colors.border} />
-          <Text style={styles.centerText}>{errorMsg}</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={loadMarket} activeOpacity={0.8}>
-            <Text style={styles.retryText}>重试</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <ScrollView
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl refreshing={loading} onRefresh={loadMarket} colors={[Colors.primary]} />
-          }
+
+        {/* 词库网格 */}
+        {loading && packs.length === 0 ? (
+          <View style={styles.centerWrap}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.centerText}>正在加载卡组市场...</Text>
+          </View>
+        ) : errorMsg ? (
+          <View style={styles.centerWrap}>
+            <Ionicons name="cloud-offline-outline" size={44} color={Colors.border} />
+            <Text style={styles.centerText}>{errorMsg}</Text>
+            <TouchableOpacity style={styles.retryBtn} onPress={loadMarket} activeOpacity={0.8}>
+              <Text style={styles.retryText}>重试</Text>
+            </TouchableOpacity>
+          </View>
+        ) : packs.length === 0 ? (
+          <View style={styles.centerWrap}>
+            <Ionicons name="albums-outline" size={44} color={Colors.border} />
+            <Text style={styles.centerText}>暂无可添加的卡组</Text>
+          </View>
+        ) : (
+          <View style={styles.grid}>{packs.map(renderPackCard)}</View>
+        )}
+      </ScrollView>
+
+      {/* 底部确定 */}
+      <View style={styles.bottomBar}>
+        <TouchableOpacity
+          style={[styles.confirmBtn, !canConfirm && styles.confirmBtnDisabled]}
+          onPress={handleConfirm}
+          disabled={!canConfirm}
+          activeOpacity={0.85}
         >
-          {packs.length === 0 ? (
-            <View style={styles.centerWrap}>
-              <Ionicons name="albums-outline" size={48} color={Colors.border} />
-              <Text style={styles.centerText}>暂无可添加的卡组</Text>
+          {installing ? (
+            <View style={styles.confirmBtnLoading}>
+              <ActivityIndicator size="small" color="#FFFFFF" />
+              <Text style={styles.confirmBtnText}>添加中...</Text>
             </View>
           ) : (
-            packs.map(renderCard)
+            <Text style={styles.confirmBtnText}>确定</Text>
           )}
-        </ScrollView>
-      )}
+        </TouchableOpacity>
+      </View>
 
       <ConfirmDialog
         visible={pendingPack !== null}
@@ -248,15 +264,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  listContent: {
+  content: {
     padding: 16,
-    paddingBottom: 40,
+    paddingBottom: 24,
   },
+
+  // 首次进入引导
   tipBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: 16,
-    marginTop: 12,
+    marginBottom: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 12,
@@ -272,89 +289,107 @@ const styles = StyleSheet.create({
     color: Colors.primaryDark,
     fontWeight: '600',
   },
-  card: {
-    flexDirection: 'row',
-    alignItems: 'center',
+
+  // 帮助说明
+  helpCard: {
     backgroundColor: Colors.card,
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: Colors.border,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
   },
-  cardMain: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  cover: {
-    width: 52,
-    height: 52,
-    borderRadius: 10,
-    backgroundColor: Colors.divider,
-    marginRight: 12,
-  },
-  info: {
-    flex: 1,
-    marginRight: 10,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  name: {
-    flexShrink: 1,
+  helpTitle: {
     fontSize: 15,
+    fontWeight: '800',
+    color: Colors.textPrimary,
+    marginBottom: 8,
+  },
+  helpLine: {
+    fontSize: 13,
+    lineHeight: 21,
+    color: Colors.textSecondary,
+  },
+  helpPrompt: {
+    marginTop: 16,
+    fontSize: 14,
     fontWeight: '700',
     color: Colors.textPrimary,
   },
-  summary: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 4,
-    lineHeight: 17,
+
+  // 词库网格
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginTop: 16,
   },
-  metaRow: {
+  packCard: {
+    width: '48.5%',
+    minHeight: 84,
+    marginBottom: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.card,
+    justifyContent: 'space-between',
+  },
+  packCardSelected: {
+    borderColor: Colors.primary,
+    borderWidth: 2,
+    backgroundColor: Colors.primaryLight,
+  },
+  packName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+    lineHeight: 21,
+  },
+  packNameSelected: {
+    color: Colors.primaryDark,
+    fontWeight: '800',
+  },
+  packMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 6,
-    gap: 10,
+    marginTop: 10,
+    gap: 8,
   },
-  metaText: {
-    fontSize: 11,
+  packCount: {
+    fontSize: 13,
     color: Colors.textMuted,
   },
-  priceText: {
-    fontSize: 11,
+  installedTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+    backgroundColor: Colors.success + '15',
+  },
+  installedTagText: {
+    fontSize: 10,
     fontWeight: '700',
     color: Colors.success,
   },
-  addBtn: {
-    minWidth: 62,
-    height: 32,
-    borderRadius: 16,
-    paddingHorizontal: 12,
+  checkBadge: {
+    position: 'absolute',
+    top: -1,
+    right: -1,
+    width: 22,
+    height: 22,
+    borderTopRightRadius: 9,
+    borderBottomLeftRadius: 10,
     backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addBtnDone: {
-    backgroundColor: Colors.divider,
-  },
-  addBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  addBtnTextDone: {
-    color: Colors.textMuted,
-  },
+
+  // 加载 / 错误 / 空态
   centerWrap: {
-    flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 30,
+    paddingVertical: 48,
+    paddingHorizontal: 20,
   },
   centerText: {
     marginTop: 12,
@@ -373,5 +408,36 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+  },
+
+  // 底部确定
+  bottomBar: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 16,
+    backgroundColor: Colors.background,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.border,
+  },
+  confirmBtn: {
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmBtnDisabled: {
+    backgroundColor: Colors.border,
+  },
+  confirmBtnLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  confirmBtnText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+    letterSpacing: 1,
   },
 });
