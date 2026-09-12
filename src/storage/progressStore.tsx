@@ -511,7 +511,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   /**
    * 拉取某个卡组的今日学习单词列表
-   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=50&type=0&type=1&type=4
+   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=50&type=0&type=1&type=2&type=3
    */
   const loadTodayWords = useCallback(
     async (

@@ -179,7 +179,8 @@ class PackLibrary {
 
   /**
    * 今日学习单词列表:
-   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=50&type=0&type=1&type=4
+   * GET /anki/pack/{packId}/learn-by-menu.json?start=0&limit=50&type=0&type=1&type=2&type=3
+   * types 为空数组时返回该卡组下全部卡片
    */
   async fetchTodayWords(
     packId: number,
@@ -191,7 +192,7 @@ class PackLibrary {
       sub?: string;
     } = {}
   ): Promise<TodayWordsResult> {
-    const { start = 0, limit = 50, types = [0, 1, 4], cat = '', sub = '' } = options;
+    const { start = 0, limit = 50, types = [0, 1, 2, 3], cat = '', sub = '' } = options;
     const rsp = await api.get<LearnResponse>(
       `/anki/pack/${packId}/learn-by-menu.json`,
       { start, limit, type: types }

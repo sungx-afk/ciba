@@ -21,8 +21,8 @@ import { ProgressBar } from '../components/ProgressBar';
 
 /** 今日学习单词一次拉取的数量（与首页保持一致） */
 const TODAY_WORD_LIMIT = 50;
-/** learn-by-menu 的卡片状态过滤：0 未学 / 1 学习中 / 4 已记住 */
-const TODAY_WORD_TYPES = [0, 1, 4];
+/** learn-by-menu 的卡片状态过滤：0 未学 / 1、2、3 学习中（已记住 4 不再出现） */
+const TODAY_WORD_TYPES = [0, 1, 2, 3];
 
 /** 同一父卡组下的兄弟卡组（用于「继续学习下一个卡组」） */
 interface SiblingPack {
@@ -43,6 +43,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     onlyDue,
     filter,
     wordIds,
+    queueWords,
     title,
     packCat,
     packId,
@@ -75,8 +76,14 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
   );
   /** 当前卡组名（继续学习下一个卡组时会更新） */
   const [sessionTitle, setSessionTitle] = useState<string | undefined>(title);
-  /** 继续学习下一个卡组时，直接使用拉取好的单词队列 */
-  const [queueOverride, setQueueOverride] = useState<Word[] | null>(null);
+  /**
+   * 直接使用的单词队列（最高优先级）:
+   * 1. 首页「复习待办」等入口通过 queueWords 传入
+   * 2. 「继续学习下一个卡组」时由下一个卡组拉取
+   */
+  const [queueOverride, setQueueOverride] = useState<Word[] | null>(
+    Array.isArray(queueWords) && queueWords.length ? queueWords : null
+  );
   const [switchingPack, setSwitchingPack] = useState(false);
 
   /**

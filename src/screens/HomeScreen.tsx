@@ -15,6 +15,7 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
 import { useAuth } from '../context/AuthContext';
 import { packLibrary, RemotePack } from '../services/packLibrary';
@@ -26,8 +27,13 @@ import { ProgressBar } from '../components/ProgressBar';
 const SUB_PAGE_SIZE = 30;
 /** 今日学习单词一次拉取的数量（与 web 端一致） */
 const TODAY_WORD_LIMIT = 50;
-/** learn-by-menu 的卡片状态过滤：0 未学 / 1 学习中 / 4 已记住 */
-const TODAY_WORD_TYPES = [0, 1, 4];
+/**
+ * 今日学习单词池的卡片状态过滤：0 未学 / 1 学习中 / 2、3 学习中
+ * 与服务端 today_card_count 口径一致（新词 + 学习中），已记住(4) 不再出现在今日学习里
+ */
+const TODAY_WORD_TYPES = [0, 1, 2, 3];
+/** 复习待办：已经学过、但还没记住的卡片（1、2、3 为学习中状态） */
+const REVIEW_WORD_TYPES = [1, 2, 3];
 /** 今日单词折叠时预览条数 */
 const TODAY_PREVIEW_COUNT = 5;
 
@@ -96,6 +102,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [activeSub, setActiveSub] = useState<RemotePack | null>(null);
   const [showAllToday, setShowAllToday] = useState(false);
+  /** 复习待办: 当前分类卡组下「学过但没记住」的单词（服务端实时返回） */
+  const [reviewWords, setReviewWords] = useState<Word[]>([]);
+  const [reviewTotal, setReviewTotal] = useState(0);
+  const [loadingReview, setLoadingReview] = useState(false);
   // 新安装卡组的子卡组同步中
   const [preparingPack, setPreparingPack] = useState(false);
   const [preparedCount, setPreparedCount] = useState(0);
@@ -117,13 +127,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const subLoadGenRef = useRef(0);
   // 已自动选过默认分类卡组的父卡组 id（用户手动切换后不再覆盖）
   const autoPickedPackRef = useRef<number | null>(null);
+  // 复习待办请求代次，避免旧结果覆盖新结果
+  const reviewReqRef = useRef(0);
+  // 最近一次的状态快照，供「重新聚焦时刷新」在回调里读取最新值
+  const homeRefreshRef = useRef<{
+    selectedTop: RemotePack | null;
+    activeSub: RemotePack | null;
+    subPackCount: number;
+  }>({ selectedTop: null, activeSub: null, subPackCount: 0 });
+  useEffect(() => {
+    homeRefreshRef.current = {
+      selectedTop,
+      activeSub,
+      subPackCount: subPacks.length,
+    };
+  }, [selectedTop, activeSub, subPacks.length]);
 
   // 顶部卡组下拉选择
   const selectorRef = useRef<View>(null);
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [dropdownTop, setDropdownTop] = useState(120);
-
-  const todayGoalProgress = Math.min(1, (stats?.todayLearnedCount || 0) / (stats?.dailyGoal || 20));
 
   /** 顶部卡组: 我的卡组 */
   const loadTopPacks = useCallback(async () => {
@@ -177,28 +200,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     setCurrentTopPack,
   ]);
 
-  /** 某个父卡组下的分类卡组 */
-  const loadSubPacks = useCallback(async (parentId: number, start: number) => {
-    const gen = ++subLoadGenRef.current;
-    setLoadingSubs(true);
-    try {
-      const { packs, total } = await packLibrary.fetchSubPacks(parentId, {
-        start,
-        limit: SUB_PAGE_SIZE,
-      });
-      if (gen !== subLoadGenRef.current) return;
-      // 重新拉取第一页时服务端数据即最新，清空本地「已掌握」增量
-      if (start === 0) resetPackMasteredDelta();
-      setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
-      setSubTotal(total);
-      setSubPacksParentId(parentId);
-    } catch (e: any) {
-      if (gen !== subLoadGenRef.current) return;
-      setErrorMsg(e?.message || '加载分类卡组失败');
-    } finally {
-      if (gen === subLoadGenRef.current) setLoadingSubs(false);
-    }
-  }, [resetPackMasteredDelta]);
+  /**
+   * 某个父卡组下的分类卡组
+   * silent = true 时不显示 loading（用于从闪卡页返回后的静默刷新）
+   */
+  const loadSubPacks = useCallback(
+    async (parentId: number, start: number, limit = SUB_PAGE_SIZE, silent = false) => {
+      const gen = ++subLoadGenRef.current;
+      if (!silent) setLoadingSubs(true);
+      try {
+        const { packs, total } = await packLibrary.fetchSubPacks(parentId, { start, limit });
+        if (gen !== subLoadGenRef.current) return;
+        // 重新拉取第一页时服务端数据即最新，清空本地「已掌握」增量
+        if (start === 0) resetPackMasteredDelta();
+        setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
+        setSubTotal(total);
+        setSubPacksParentId(parentId);
+      } catch (e: any) {
+        if (gen !== subLoadGenRef.current) return;
+        if (!silent) setErrorMsg(e?.message || '加载分类卡组失败');
+      } finally {
+        if (gen === subLoadGenRef.current && !silent) setLoadingSubs(false);
+      }
+    },
+    [resetPackMasteredDelta]
+  );
 
   /**
    * 刚安装的卡组: 服务端在后台线程逐个复制子卡组，
@@ -308,12 +334,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   /**
    * 闪卡页点「继续学习下一个卡组」后，store 里的今日单词卡组会变成下一个子卡组，
    * 这里跟着同步高亮，避免返回首页后显示成上一个卡组的加载态。
+   * 注意: 每次都用列表里的最新卡组对象，保证「今日已学」等数字刷新后能同步。
    */
   useEffect(() => {
     if (todayWordsPackId == null) return;
     const matched = subPacks.find((p) => Number(p.id) === Number(todayWordsPackId));
     if (!matched) return;
-    setActiveSub((prev) => (Number(prev?.id) === Number(matched.id) ? prev : matched));
+    setActiveSub((prev) => (prev === matched ? prev : matched));
     setShowAllToday(false);
   }, [todayWordsPackId, subPacks]);
 
@@ -435,6 +462,75 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     ensureTodayWords,
   ]);
 
+  /**
+   * 拉取某个分类卡组的「复习待办」单词（type = 1/2/3，学过但还没记住）。
+   * 直接调服务端接口而不写进 store，避免覆盖「今日学习单词」缓存。
+   */
+  const loadReviewWords = useCallback(async (pack: RemotePack, topName: string) => {
+    const req = ++reviewReqRef.current;
+    setLoadingReview(true);
+    try {
+      const { words: list, total } = await packLibrary.fetchTodayWords(pack.id, {
+        start: 0,
+        limit: TODAY_WORD_LIMIT,
+        types: REVIEW_WORD_TYPES,
+        cat: topName,
+        sub: pack.name || '',
+      });
+      if (req !== reviewReqRef.current) return;
+      setReviewWords(list);
+      setReviewTotal(total || list.length);
+    } catch {
+      if (req !== reviewReqRef.current) return;
+      setReviewWords([]);
+      setReviewTotal(0);
+    } finally {
+      if (req === reviewReqRef.current) setLoadingReview(false);
+    }
+  }, []);
+
+  // 切换分类卡组时刷新复习待办
+  useEffect(() => {
+    if (!isLoggedIn || !activeSub) {
+      reviewReqRef.current += 1;
+      setReviewWords([]);
+      setReviewTotal(0);
+      setLoadingReview(false);
+      return;
+    }
+    loadReviewWords(activeSub, selectedTop?.name || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn, activeSub?.id, selectedTop?.name, loadReviewWords]);
+
+  /**
+   * 从闪卡页学完返回时静默刷新：分类卡组统计（今日已学/已掌握）+ 今日单词 + 复习待办，
+   * 保证卡片上的数字是学完之后的最新数据（首次聚焦跳过，避免重复请求）。
+   */
+  const focusedOnceRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!focusedOnceRef.current) {
+        focusedOnceRef.current = true;
+        return;
+      }
+      if (!isLoggedIn) return;
+      const { selectedTop: top, activeSub: pack, subPackCount } = homeRefreshRef.current;
+      if (!top) return;
+      // 保持已加载的分页长度，只静默替换最新数据
+      loadSubPacks(top.id, 0, Math.max(SUB_PAGE_SIZE, subPackCount), true);
+      if (pack) {
+        loadTodayWords(pack.id, {
+          start: 0,
+          limit: TODAY_WORD_LIMIT,
+          types: TODAY_WORD_TYPES,
+          cat: top.name || '',
+          sub: pack.name || '',
+        }).catch(() => {});
+        loadReviewWords(pack, top.name || '');
+      }
+    }, [isLoggedIn, loadSubPacks, loadTodayWords, loadReviewWords])
+  );
+
   /** 点击分类卡组: 拉取今日学习单词列表 */
   const handleSelectSub = useCallback(
     async (pack: RemotePack) => {
@@ -503,6 +599,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         // 把同一父卡组下的「兄弟卡组」一起带过去，学完当前卡组后可继续学下一个
         const packIndex = subPacks.findIndex((p) => Number(p.id) === Number(target.id));
         navigation.navigate('Flashcard', {
+          // 直接带单词对象，避免闪卡页再从本地缓存里反查导致进不去
+          queueWords: list,
           wordIds: list.map((w) => w.id),
           title: target.name,
           // 当前子卡组 id + 顶层卡组名（继续学习下一个卡组时使用）
@@ -520,6 +618,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     [ensureTodayWords, activeSub, subPacks, subTotal, selectedTop?.name, isLoggedIn, navigation]
   );
 
+  /** 复习待办: 用服务端返回的「学过但没记住」的单词直接进入闪卡复习 */
+  const handleStartReview = useCallback(() => {
+    const pack = activeSub;
+    if (!pack) {
+      Alert.alert('提示', '请先点击下方分类卡组');
+      return;
+    }
+    if (!reviewWords.length) {
+      Alert.alert('太棒了', '该分类暂时没有需要复习的单词');
+      return;
+    }
+    const packIndex = subPacks.findIndex((p) => Number(p.id) === Number(pack.id));
+    navigation.navigate('Flashcard', {
+      queueWords: reviewWords,
+      title: `${pack.name} · 复习`,
+      packId: pack.id,
+      packCat: selectedTop?.name || '',
+      packQueue: subPacks.map((p) => ({ id: p.id, name: p.name })),
+      packIndex,
+      hasMorePacks: subTotal > subPacks.length,
+    });
+  }, [activeSub, reviewWords, subPacks, subTotal, selectedTop?.name, navigation]);
+
   const handleOpenTodayList = () => {
     if (!activeSub || !todayWords.length) return;
     navigation.navigate('WordList', {
@@ -528,47 +649,87 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     });
   };
 
-  // 今日待学: 选中分类的今日数量，未选中时取已加载分类的合计
-  const todayDue = useMemo(() => {
-    if (activeSub) return activeSub.today_card_count || 0;
-    return subPacks.reduce((sum, p) => sum + (p.today_card_count || 0), 0);
-  }, [activeSub, subPacks]);
-
-  /** 今日学习单词列表 */
-  const renderTodayWords = () => {
-    if (!activeSub) {
-      return (
-        <View style={styles.todayHintWrap}>
-          <Ionicons name="sparkles-outline" size={15} color={Colors.textMuted} />
-          <Text style={styles.todayHintText}>点击分类卡组，获取今日学习单词列表</Text>
-        </View>
-      );
+  /**
+   * 汇总下面「分类卡组」列表里的数据（与每个子卡组卡片显示的数字同源）:
+   *   整体词数 / 已掌握 / 今日任务 / 今日已学
+   * 服务端 remembered_card_count 不实时更新，叠加本地学习增量后再统计
+   */
+  const packAgg = useMemo(() => {
+    let total = 0;
+    let remembered = 0;
+    let todayTotal = 0;
+    let todayLearned = 0;
+    for (const p of subPacks) {
+      const t = p.card_count || 0;
+      const d = packMasteredDelta[p.id] || 0;
+      const dayTotal = p.today_card_count || 0;
+      total += t;
+      remembered += Math.max(0, Math.min(t, (p.remembered_card_count || 0) + d));
+      todayTotal += dayTotal;
+      todayLearned += Math.min(p.today_learned_card_count || 0, dayTotal);
     }
+    if (!total) total = selectedTop?.card_count || 0;
+    return { total, remembered, todayTotal, todayLearned };
+  }, [subPacks, packMasteredDelta, selectedTop?.card_count]);
+
+  /** 整体掌握进度（当前卡组下所有分类卡组） */
+  const masteryProgress = packAgg.total > 0 ? Math.min(1, packAgg.remembered / packAgg.total) : 0;
+
+  /** 今日任务（当前选中的分类卡组）: 总数 / 已学 / 剩余 */
+  const todayTask = useMemo(() => {
+    const total = activeSub?.today_card_count || 0;
+    const learned = Math.min(activeSub?.today_learned_card_count || 0, total);
+    return { total, learned, remaining: Math.max(0, total - learned) };
+  }, [activeSub]);
+
+  /** 今日单词池（learn-by-menu 实时返回）: 当前分类卡组今日要学的单词总数 */
+  const todayPoolTotal =
+    activeSub && Number(todayWordsPackId) === Number(activeSub.id)
+      ? todayWordsTotal
+      : undefined;
+
+  /** 今日学习单词预览（当前分类卡组） */
+  const renderTodayWords = () => {
+    if (!activeSub) return null;
 
     // 正在加载，或列表还属于上一个分类卡组时显示 loading
     const isLoadingThis =
-      isLoadingTodayWords ||
-      (!!activeSub && Number(todayWordsPackId) !== Number(activeSub.id));
+      isLoadingTodayWords || Number(todayWordsPackId) !== Number(activeSub.id);
     const visibleWords = showAllToday ? todayWords : todayWords.slice(0, TODAY_PREVIEW_COUNT);
 
     return (
       <View style={styles.todayBlock}>
         <View style={styles.todayBlockHeader}>
-          <Text style={styles.todayBlockTitle} numberOfLines={1}>
-            今日学习单词 · {activeSub.name}
-          </Text>
+          <Text style={styles.todayBlockTitle}>今日单词</Text>
           <Text style={styles.todayBlockCount}>
-            {todayWords.length}/{todayWordsTotal}
+            {isLoadingThis
+              ? '加载中'
+              : `${todayWords.length}${todayPoolTotal ? ` / ${todayPoolTotal}` : ''} 词`}
           </Text>
+          <TouchableOpacity
+            style={styles.todayMoreBtn}
+            onPress={handleOpenTodayList}
+            activeOpacity={0.7}
+            disabled={!todayWords.length}
+          >
+            <Text style={[styles.todayMoreText, !todayWords.length && styles.todayMoreTextDisabled]}>
+              查看全部
+            </Text>
+            <Ionicons
+              name="chevron-forward"
+              size={13}
+              color={todayWords.length ? Colors.primary : Colors.textMuted}
+            />
+          </TouchableOpacity>
         </View>
 
         {isLoadingThis ? (
           <View style={styles.todayLoading}>
             <ActivityIndicator size="small" color={Colors.primary} />
-            <Text style={styles.todayLoadingText}>正在获取今日学习单词...</Text>
+            <Text style={styles.todayLoadingText}>正在获取今日单词...</Text>
           </View>
         ) : todayWords.length === 0 ? (
-          <Text style={styles.todayEmptyText}>该分类今日没有待学习的单词</Text>
+          <Text style={styles.todayEmptyText}>该分类今日没有待学的单词，已全部掌握</Text>
         ) : (
           <>
             {visibleWords.map((w) => (
@@ -596,25 +757,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
                 />
               </TouchableOpacity>
             ) : null}
-
-            <View style={styles.todayActionRow}>
-              <TouchableOpacity
-                style={styles.todayOutlineBtn}
-                onPress={handleOpenTodayList}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="list-outline" size={15} color={Colors.textSecondary} />
-                <Text style={styles.todayOutlineText}>单词列表</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.todayPrimaryBtn}
-                onPress={() => handleStartStudy(activeSub)}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="play" size={15} color="#FFFFFF" />
-                <Text style={styles.todayPrimaryText}>背诵这 {todayWords.length} 个单词</Text>
-              </TouchableOpacity>
-            </View>
           </>
         )}
       </View>
@@ -628,6 +770,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     const delta = packMasteredDelta[item.id] || 0;
     const remembered = Math.max(0, Math.min(total, (item.remembered_card_count || 0) + delta));
     const todayCount = item.today_card_count || 0;
+    // 今日已学不会超过今日总数，避免服务端缓存导致「已学 > 待学」
+    const todayLearnedCount = Math.min(item.today_learned_card_count || 0, todayCount);
     const progress = total > 0 ? Math.min(1, remembered / total) : 0;
     const color = getCategoryColor(item.name);
     const isLoadingList = isLoadingPackWords && packWordsPackId === item.id;
@@ -650,9 +794,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
               <ActivityIndicator size="small" color={Colors.primary} />
             ) : todayCount > 0 ? (
               <View style={styles.todayBadge}>
-                <Text style={styles.todayBadgeText}>今日 {todayCount}</Text>
+                <Text style={styles.todayBadgeText}>
+                  今日 {todayLearnedCount}/{todayCount}
+                </Text>
               </View>
-            ) : null}
+            ) : (
+              <View style={[styles.todayBadge, styles.todayBadgeDone]}>
+                <Text style={styles.todayBadgeDoneText}>今日已完成</Text>
+              </View>
+            )}
           </View>
 
           <View style={styles.subMetaRow}>
@@ -782,62 +932,118 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         ) : (
           /* 已登录状态 */
           <>
+            {/* 头部: 当前卡组 + 整体掌握度 */}
             <View style={styles.dashHeader}>
               <View style={styles.dashTitleWrap}>
                 <Text style={styles.dashTitle}>今日学习</Text>
-                <Text style={styles.dashSubtitle}>
-                  已学 {stats.todayLearnedCount} / 目标 {stats.dailyGoal} 词
+                <Text style={styles.dashSubtitle} numberOfLines={1}>
+                  {selectedTop ? selectedTop.name : '我的卡组'}
+                  {activeSub ? ` · ${activeSub.name}` : ''}
                 </Text>
               </View>
               <View style={styles.dashGoalPercent}>
-                <Text style={styles.dashPercentText}>{Math.round(todayGoalProgress * 100)}%</Text>
+                <Text style={styles.dashPercentText}>{Math.round(masteryProgress * 100)}%</Text>
               </View>
             </View>
 
+            {/* 整体掌握进度: 取自下方分类卡组的合计 */}
             <View style={styles.dashProgressTrack}>
-              <ProgressBar progress={todayGoalProgress} height={8} color={Colors.primary} />
+              <ProgressBar progress={masteryProgress} height={8} color={Colors.primary} />
+            </View>
+            <View style={styles.dashProgressMeta}>
+              <Text style={styles.dashProgressMetaText}>
+                已掌握 {packAgg.remembered}/{packAgg.total} 词
+              </Text>
+              <Text style={styles.dashProgressMetaText}>
+                共 {subPacks.length} 个分类卡组
+              </Text>
             </View>
 
-            <View style={styles.dashMetricsRow}>
-              <View style={styles.metricItem}>
-                <Text style={styles.metricNumber}>{todayDue}</Text>
-                <Text style={styles.metricLabel}>今日待学</Text>
-              </View>
-              <View style={styles.metricDivider} />
-              <View style={styles.metricItem}>
-                <Text style={styles.metricNumber}>{stats.masteredCount}</Text>
-                <Text style={styles.metricLabel}>已掌握</Text>
-              </View>
-              <View style={styles.metricDivider} />
-              <View style={styles.metricItem}>
-                <Text style={styles.metricNumber}>
-                  {selectedTop?.card_count ?? stats.totalWords}
-                </Text>
-                <Text style={styles.metricLabel}>卡组词数</Text>
-              </View>
-            </View>
+            {activeSub ? (
+              /* 今日任务: 当前分类卡组 */
+              <View style={styles.todayTaskBox}>
+                <View style={styles.todayTaskHeader}>
+                  <Text style={styles.todayTaskTitle} numberOfLines={1}>
+                    今日任务 · {activeSub.name}
+                  </Text>
+                  <Text style={styles.todayTaskTotal}>
+                    {todayTask.total > 0 ? `共 ${todayTask.total} 词` : '已完成'}
+                  </Text>
+                </View>
 
-            <View style={styles.dashActionRow}>
-              <TouchableOpacity
-                style={[styles.actionBtn, styles.primaryBtn]}
-                onPress={() => handleStartStudy()}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="flash" size={18} color="#FFFFFF" />
-                <Text style={styles.primaryBtnText}>开始背词</Text>
-              </TouchableOpacity>
+                {todayTask.total > 0 ? (
+                  <>
+                    <View style={styles.todayTaskBarWrap}>
+                      <ProgressBar
+                        progress={todayTask.learned / todayTask.total}
+                        height={6}
+                        color={Colors.success}
+                      />
+                    </View>
 
-              {stats.dueTodayCount > 0 ? (
-                <TouchableOpacity
-                  style={[styles.actionBtn, styles.reviewBtn]}
-                  onPress={() => navigation.navigate('Flashcard', { onlyDue: true })}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="repeat" size={18} color={Colors.primary} />
-                  <Text style={styles.reviewBtnText}>复习待办 ({stats.dueTodayCount})</Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
+                    <View style={styles.todayTaskMetrics}>
+                      <View style={styles.metricItem}>
+                        <Text style={styles.metricNumber}>{todayTask.learned}</Text>
+                        <Text style={styles.metricLabel}>已学</Text>
+                      </View>
+                      <View style={styles.metricDivider} />
+                      <View style={styles.metricItem}>
+                        <Text style={styles.metricNumber}>{todayTask.remaining}</Text>
+                        <Text style={styles.metricLabel}>剩余待学</Text>
+                      </View>
+                      <View style={styles.metricDivider} />
+                      <View style={styles.metricItem}>
+                        <Text style={styles.metricNumber}>
+                          {loadingReview ? '…' : reviewTotal}
+                        </Text>
+                        <Text style={styles.metricLabel}>待复习</Text>
+                      </View>
+                    </View>
+                  </>
+                ) : (
+                  <View style={styles.todayTaskDone}>
+                    <Ionicons name="checkmark-circle" size={15} color={Colors.success} />
+                    <Text style={styles.todayTaskDoneText}>
+                      该分类今天的单词已学完，可以点「复习待办」巩固一下
+                    </Text>
+                  </View>
+                )}
+
+                <View style={styles.dashActionRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.actionBtn,
+                      styles.reviewBtn,
+                      (!reviewTotal || loadingReview) && styles.actionBtnDisabled,
+                    ]}
+                    onPress={handleStartReview}
+                    activeOpacity={0.8}
+                    disabled={!reviewTotal || loadingReview}
+                  >
+                    {loadingReview ? (
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                    ) : (
+                      <Ionicons name="repeat" size={18} color={Colors.primary} />
+                    )}
+                    <Text style={styles.reviewBtnText}>复习待办</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.primaryBtn]}
+                    onPress={() => handleStartStudy(activeSub)}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="flash" size={18} color="#FFFFFF" />
+                    <Text style={styles.primaryBtnText}>开始背词</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.todayHintWrap}>
+                <Ionicons name="sparkles-outline" size={15} color={Colors.textMuted} />
+                <Text style={styles.todayHintText}>点击下方分类卡组，查看并开始今日学习</Text>
+              </View>
+            )}
 
             {renderTodayWords()}
           </>
@@ -848,7 +1054,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>分类卡组{subTotal ? `（${subTotal}）` : ''}</Text>
         <Text style={styles.sectionHint} numberOfLines={1} ellipsizeMode="tail">
-          {selectedTop ? selectedTop.name : ''}
+          {selectedTop
+            ? `${selectedTop.name}${
+                packAgg.todayTotal ? ` · 今日 ${packAgg.todayLearned}/${packAgg.todayTotal}` : ''
+              }`
+            : ''}
         </Text>
       </View>
 
@@ -1288,14 +1498,63 @@ const styles = StyleSheet.create({
   dashProgressTrack: {
     marginTop: 14,
   },
-  dashMetricsRow: {
+  dashProgressMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  dashProgressMetaText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  // 今日任务（当前分类卡组）
+  todayTaskBox: {
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
+  },
+  todayTaskHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  todayTaskTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginRight: 8,
+  },
+  todayTaskTotal: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  todayTaskBarWrap: {
+    marginBottom: 12,
+  },
+  todayTaskMetrics: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    marginTop: 18,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: Colors.divider,
+    marginBottom: 4,
+  },
+  todayTaskDone: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: Colors.success + '12',
+  },
+  todayTaskDoneText: {
+    flex: 1,
+    fontSize: 12,
+    color: Colors.textSecondary,
   },
   metricItem: {
     alignItems: 'center',
@@ -1345,6 +1604,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+  actionBtnDisabled: {
+    opacity: 0.45,
+  },
 
   // 今日学习单词列表
   todayHintWrap: {
@@ -1383,7 +1645,20 @@ const styles = StyleSheet.create({
   todayBlockCount: {
     fontSize: 12,
     fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  todayMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  todayMoreText: {
+    fontSize: 12,
+    fontWeight: '600',
     color: Colors.primary,
+  },
+  todayMoreTextDisabled: {
+    color: Colors.textMuted,
   },
   todayLoading: {
     flexDirection: 'row',
@@ -1554,6 +1829,14 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: Colors.primary,
+  },
+  todayBadgeDone: {
+    backgroundColor: Colors.success + '1A',
+  },
+  todayBadgeDoneText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.success,
   },
   subMetaRow: {
     flexDirection: 'row',
