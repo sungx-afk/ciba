@@ -39,8 +39,10 @@ jobs:
 
       - name: Install CocoaPods Dependencies
         run: |
+          set -o pipefail
+          mkdir -p build
           cd ios
-          pod install --repo-update || pod install
+          pod install --repo-update 2>&1 | tee ../build/pod-install.log
 
       - name: Build & Archive iOS App
         run: |
@@ -65,7 +67,13 @@ jobs:
         if: failure()
         run: |
           echo "::error title=toolchain::Xcode $(xcode-select -p) | $(xcodebuild -version | tr '\n' ' ')"
-          node tools/surface-xcode-errors.js build/xcodebuild.log
+          if [ -d ios ]; then
+            echo "::error title=ios-dir::ios 目录内容: $(ls ios 2>/dev/null | head -15 | tr '\n' ' ')"
+          else
+            echo "::error title=ios-dir::ios 目录不存在（prebuild 未生成）"
+          fi
+          node tools/surface-xcode-errors.js build/pod-install.log pod-install
+          node tools/surface-xcode-errors.js build/xcodebuild.log xcodebuild
 
       - name: Package IPA
         run: |
