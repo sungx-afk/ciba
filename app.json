@@ -48,7 +48,8 @@
       "expo-asset",
       "expo-font",
       "expo-apple-authentication",
-      "expo-iap"
+      "expo-iap",
+      "./plugins/withIapPodSettings.js"
     ]
   }
 }
