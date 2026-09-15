@@ -1,12 +1,16 @@
 import { Platform } from 'react-native';
-import type { ProductSubscriptionIOS, Purchase, PurchaseError } from 'expo-iap';
+import type { Purchase, PurchaseError, SubscriptionProduct } from 'expo-iap';
 
 /**
- * App Store 内购（自动续期订阅）能力封装，基于 expo-iap（StoreKit 2 / openiap）。
+ * App Store 内购（自动续期订阅）能力封装，基于 expo-iap 2.x（StoreKit）。
+ *
+ * ⚠️ 版本约束：expo-iap 5.x 要求 Expo SDK 53+，本项目是 SDK 52，
+ *   因此固定在 2.9.7（Swift 5.4 / iOS 13.4 / openiap 1.1.9，适配 SDK 52 + Xcode 15.4）。
+ *   将来升级 Expo SDK 到 53+ 后再考虑升到 5.x。
  *
  * 使用前提：
  *  - 真机 + 自定义开发包（EAS Build / dev client），Expo Go 无法使用原生内购模块
- *  - App Store Connect 已创建订阅产品，并填到 src/config/iapConfig.ts
+ *  - App Store Connect 已创建订阅产品，产品 ID 由服务端 /pay/price_tags 下发
  *  - 沙箱测试账号：App Store Connect → 用户和访问 → 沙箱测试员
  *
  * 说明：这里用惰性 require 加载原生模块（只做类型导入），
@@ -38,12 +42,13 @@ export interface IapProduct {
 
 export interface IapPurchase {
   productId: string;
+  /** StoreKit 2 的交易 ID，服务端核销用它 */
   transactionId?: string;
   /** 原始交易 ID（订阅续期时保持不变，服务端去重要用它） */
   originalTransactionId?: string;
-  /** base64 票据（App Store 旧版 verifyReceipt 用），由 fetchReceipt() 获取 */
+  /** base64 票据（StoreKit 返回，备用） */
   transactionReceipt: string;
-  /** StoreKit 2 的 JWS 票据（走 App Store Server API v2 时用） */
+  /** JWS 票据（StoreKit 2） */
   transactionJws?: string;
   /** 交易时间（毫秒） */
   transactionDate?: number;
@@ -81,7 +86,7 @@ function requireIap(): any {
   return iapModule;
 }
 
-function mapProduct(p: Partial<ProductSubscriptionIOS> | any): IapProduct {
+function mapProduct(p: Partial<SubscriptionProduct> | any): IapProduct {
   return {
     productId: p?.id || '',
     title: p?.title || p?.displayName || '',
@@ -96,10 +101,9 @@ function mapProduct(p: Partial<ProductSubscriptionIOS> | any): IapProduct {
 function mapPurchase(p: Partial<Purchase> | any): IapPurchase {
   return {
     productId: p?.productId || '',
-    transactionId: p?.id,
-    originalTransactionId: p?.originalTransactionIdentifierIOS || p?.id,
-    // expo-iap 的 Purchase 不带 base64 票据，需要时用 fetchReceipt() 单独取
-    transactionReceipt: '',
+    transactionId: p?.transactionId || p?.id,
+    originalTransactionId: p?.originalTransactionIdentifierIOS || p?.transactionId || p?.id,
+    transactionReceipt: p?.transactionReceipt || '',
     transactionJws: p?.purchaseToken || undefined,
     transactionDate: p?.transactionDate,
     expirationDate: p?.expirationDateIOS,
@@ -130,7 +134,7 @@ export async function endIap(): Promise<void> {
 /** 拉取自动续期订阅商品（取不到通常是产品 ID 未生效或协议未完成） */
 export async function fetchSubscriptions(skus: string[]): Promise<IapProduct[]> {
   const Iap = requireIap();
-  const list = await Iap.fetchProducts({ skus, type: 'subs' });
+  const list = await Iap.getSubscriptions(skus);
   return ((list || []) as any[]).map(mapProduct).filter((p) => !!p.productId);
 }
 
@@ -141,14 +145,13 @@ export async function fetchSubscriptions(skus: string[]): Promise<IapProduct[]> 
  */
 export async function buySubscription(sku: string, appAccountToken?: string): Promise<void> {
   const Iap = requireIap();
-  await Iap.requestPurchase({
-    request: {
-      apple: {
-        sku,
-        ...(appAccountToken ? { appAccountToken } : {}),
-      },
+  await Iap.requestSubscription({
+    ios: {
+      sku,
+      // 由业务侧在服务端核销后再结束事务，避免掉单
+      andDangerouslyFinishTransactionAutomatically: false,
+      ...(appAccountToken ? { appAccountToken } : {}),
     },
-    type: 'subs',
   });
 }
 
@@ -192,16 +195,6 @@ export function isUserCancelled(error: IapErrorInfo | any): boolean {
   }
 }
 
-/** 取 base64 的应用票据，给服务端做旧版 verifyReceipt 校验 */
-export async function fetchReceipt(): Promise<string> {
-  const Iap = requireIap();
-  try {
-    return (await Iap.getReceiptDataIOS()) || '';
-  } catch {
-    return '';
-  }
-}
-
 /** 结束事务：必须在服务端确认票据之后调用 */
 export async function finishPurchase(purchase: IapPurchase): Promise<void> {
   if (!purchase?.raw) return;
@@ -212,24 +205,31 @@ export async function finishPurchase(purchase: IapPurchase): Promise<void> {
   }
 }
 
-/** 取回当前 Apple ID 下可恢复的订单（用于「恢复购买」与补单） */
+/** 恢复当前 Apple ID 下可恢复的订单（用于「恢复购买」与补单） */
 export async function fetchRestoreablePurchases(): Promise<IapPurchase[]> {
   const Iap = requireIap();
+  let list: any[] = [];
   try {
-    // 先触发一次同步，再用 getAvailablePurchases 读取结果
-    await Iap.restorePurchases();
+    // v2 的 restorePurchases 会先 sync 再返回可恢复的订单
+    list = (await Iap.restorePurchases({ onlyIncludeActiveItemsIOS: true })) || [];
   } catch {
-    // 同步失败不阻断后续读取
+    list = [];
   }
-  const list = await Iap.getAvailablePurchases({ onlyIncludeActiveItemsIOS: true });
-  return ((list || []) as any[]).map(mapPurchase).filter((p) => !!p.productId);
+  if (!list.length) {
+    try {
+      list = (await Iap.getAvailablePurchases({ onlyIncludeActiveItemsIOS: true })) || [];
+    } catch {
+      list = [];
+    }
+  }
+  return (list as any[]).map(mapPurchase).filter((p) => !!p.productId);
 }
 
 /** 打开 App Store 的订阅管理页，返回是否成功 */
 export async function openManageSubscriptions(): Promise<boolean> {
   const Iap = requireIap();
   try {
-    await Iap.deepLinkToSubscriptions();
+    await Iap.deepLinkToSubscriptions({});
     return true;
   } catch {
     return false;
