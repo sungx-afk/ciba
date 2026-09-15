@@ -9,7 +9,6 @@ import {
   StatusBar,
   Alert,
   ActivityIndicator,
-  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Header } from '../components/Header';
@@ -46,8 +45,6 @@ const BENEFITS = ['词库全解锁：高中 / 四级 / 考研 / 托福', '后续
 // TODO: 用户协议与隐私政策暂时指向同一页面，后续拆成各自的地址
 const AGREEMENT_URL = 'https://cibaen.com/privacy-policy.html';
 const POLICY_URL = 'https://cibaen.com/privacy-policy.html';
-/** App Store 的订阅管理页 */
-const MANAGE_SUBSCRIPTION_URL = 'https://apps.apple.com/account/subscriptions';
 
 interface PurchaseScreenProps {
   navigation: any;
@@ -350,12 +347,8 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
   };
 
   const openManageSubscription = async () => {
-    // 优先用 expo-iap 的原生深链（iOS 打开 App Store 订阅管理页）
-    const opened = isIapSupported() ? await openManageSubscriptions() : false;
-    if (opened) return;
-    try {
-      await Linking.openURL(MANAGE_SUBSCRIPTION_URL);
-    } catch {
+    const opened = await openManageSubscriptions();
+    if (!opened) {
       Alert.alert('提示', '无法打开订阅管理页，可在 App Store → 账户 → 订阅中管理');
     }
   };
