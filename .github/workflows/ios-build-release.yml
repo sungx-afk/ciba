@@ -44,6 +44,7 @@ jobs:
 
       - name: Build & Archive iOS App
         run: |
+          set -o pipefail
           WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
           SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json | node -p "JSON.parse(require('fs').readFileSync(0)).workspace.schemes[0]" || echo "app")
           echo "Building Workspace: $WORKSPACE, Scheme: $SCHEME"
@@ -57,7 +58,14 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            clean archive
+            clean archive 2>&1 | tee build/xcodebuild.log
+
+      # 把真正的编译错误提到 Annotations，失败时不用翻整份日志
+      - name: Surface Build Errors
+        if: failure()
+        run: |
+          echo "::error title=toolchain::Xcode $(xcode-select -p) | $(xcodebuild -version | tr '\n' ' ')"
+          node tools/surface-xcode-errors.js build/xcodebuild.log
 
       - name: Package IPA
         run: |
