@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,63 +8,382 @@ import {
   SafeAreaView,
   StatusBar,
   Alert,
+  ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Header } from '../components/Header';
 import { Colors } from '../theme/colors';
+import { useAuth } from '../context/AuthContext';
+import { PayApi, VipStatus } from '../services/payApi';
+import {
+  FALLBACK_PLANS,
+  FALLBACK_SKUS,
+  MemberPlan,
+  PRICE_TAG_VERSION,
+  priceTagToPlan,
+} from '../config/iapConfig';
+import {
+  IapProduct,
+  IapPurchase,
+  appAccountTokenFromUserId,
+  buySubscription,
+  endIap,
+  fetchRestoreablePurchases,
+  fetchSubscriptions,
+  finishPurchase,
+  initIap,
+  isIapSupported,
+  isSandboxPurchase,
+  isUserCancelled,
+  onPurchaseError,
+  onPurchaseUpdate,
+  openManageSubscriptions,
+} from '../services/iapService';
 
-interface Plan {
-  id: string;
-  label: string;
-  price: number;
-  originalPrice?: number;
-  monthlyPrice: string;
-  save?: number;
-}
-
-const PLANS: Plan[] = [
-  {
-    id: '12m',
-    label: '12 个月',
-    price: 78,
-    originalPrice: 120,
-    monthlyPrice: '¥6.5',
-    save: 35,
-  },
-  {
-    id: '3m',
-    label: '3 个月',
-    price: 25,
-    originalPrice: 30,
-    monthlyPrice: '¥8.3',
-  },
-  {
-    id: '1m',
-    label: '1 个月',
-    price: 10,
-    monthlyPrice: '¥10',
-  },
-];
-
-const BENEFITS = [
-  '词库全解锁：高中 / 四级 / 考研 / 托福',
-  '后续新增词库免费用',
-];
+const BENEFITS = ['词库全解锁：高中 / 四级 / 考研 / 托福', '后续新增词库免费用'];
 
 // TODO: 用户协议与隐私政策暂时指向同一页面，后续拆成各自的地址
 const AGREEMENT_URL = 'https://cibaen.com/privacy-policy.html';
 const POLICY_URL = 'https://cibaen.com/privacy-policy.html';
+/** App Store 的订阅管理页 */
+const MANAGE_SUBSCRIPTION_URL = 'https://apps.apple.com/account/subscriptions';
 
 interface PurchaseScreenProps {
   navigation: any;
 }
 
-export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) => {
-  const [selectedPlanId, setSelectedPlanId] = useState<string>('12m');
+/** 票据校验结果 */
+interface VerifyResult {
+  ok: boolean;
+  endDate?: string;
+  message?: string;
+}
 
-  const handleBuy = () => {
-    Alert.alert('提示', '会员通道尚未开放，当前版本全部功能免费。');
+/** 2027-09-15 00:00:00 -> 2027-09-15 */
+function formatDate(text?: string): string {
+  if (!text) return '';
+  const date = String(text).trim();
+  return date.length >= 10 ? date.slice(0, 10) : date;
+}
+
+export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) => {
+  const { user, isLoggedIn, refreshUserInfo } = useAuth();
+
+  const [selectedPlanId, setSelectedPlanId] = useState<string>(FALLBACK_PLANS[0].id);
+  /** 套餐列表：由服务端 /pay/price_tags 下发，接口异常时回退到 FALLBACK_PLANS */
+  const [plans, setPlans] = useState<MemberPlan[]>(FALLBACK_PLANS);
+  const [plansError, setPlansError] = useState<string | null>(null);
+  const [products, setProducts] = useState<Record<string, IapProduct>>({});
+  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [productsError, setProductsError] = useState<string | null>(null);
+  const [buying, setBuying] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [vip, setVip] = useState<VipStatus | null>(null);
+
+  // 本次主动购买的 Promise 控制器（结果由原生回调驱动）
+  const pendingRef = useRef<{
+    resolve: (p: IapPurchase) => void;
+    reject: (e: any) => void;
+  } | null>(null);
+  // 供原生回调读取最新状态，避免闭包过期
+  const verifyRef = useRef<(p: IapPurchase, silent?: boolean) => Promise<VerifyResult>>(
+    async () => ({ ok: false })
+  );
+  const isLoggedInRef = useRef(isLoggedIn);
+  const vipRef = useRef(vip);
+  const plansRef = useRef(plans);
+  useEffect(() => {
+    isLoggedInRef.current = isLoggedIn;
+  }, [isLoggedIn]);
+  useEffect(() => {
+    vipRef.current = vip;
+  }, [vip]);
+  useEffect(() => {
+    plansRef.current = plans;
+  }, [plans]);
+
+  const appAccountToken = useMemo(
+    () => (user ? appAccountTokenFromUserId(user.id) : undefined),
+    [user?.id]
+  );
+
+  const selectedPlan: MemberPlan =
+    plans.find((p) => p.id === selectedPlanId) || plans[0] || FALLBACK_PLANS[0];
+  const selectedProduct = products[selectedPlan.sku];
+
+  const refreshVip = useCallback(async () => {
+    try {
+      const status = await PayApi.getVipStatus();
+      setVip(status);
+    } catch {
+      // 未登录 / 网络异常时忽略，页面按「非会员」展示
+    }
+  }, []);
+
+  /**
+   * 拉取服务端价签 -> 本地套餐，返回本次要向 StoreKit 查询的产品 ID。
+   * 档位、名称、产品 ID、价签 id 全部以服务端为准。
+   */
+  const loadPlans = useCallback(async (): Promise<string[]> => {
+    try {
+      const tags = await PayApi.listPriceTags(PRICE_TAG_VERSION);
+      const mapped = tags
+        .map(priceTagToPlan)
+        .filter((p): p is MemberPlan => !!p && !!p.sku);
+      if (!mapped.length) {
+        setPlans(FALLBACK_PLANS);
+        setPlansError('暂无可购买的会员套餐');
+        return FALLBACK_SKUS;
+      }
+      // 周期长的排前面
+      mapped.sort((a, b) => b.months - a.months);
+      setPlans(mapped);
+      setSelectedPlanId((prev) =>
+        mapped.some((p) => p.id === prev) ? prev : mapped[0].id
+      );
+      setPlansError(null);
+      return mapped.map((p) => p.sku);
+    } catch (e: any) {
+      setPlans(FALLBACK_PLANS);
+      setPlansError(e?.message || '套餐加载失败，已展示默认套餐');
+      return FALLBACK_SKUS;
+    }
+  }, []);
+
+  /**
+   * 把票据交给服务端校验，成功后才结束事务（避免掉单）。
+   * silent = true 用于启动补单，不弹窗。
+   */
+  const verifyPurchase = useCallback(
+    async (purchase: IapPurchase, silent = false): Promise<VerifyResult> => {
+      try {
+        // 后端按 StoreKit 2 的 transaction_id 核销，拿不到就无法上报
+        if (!purchase.transactionId) {
+          return { ok: false, message: '未能获取支付凭证，请点击「恢复购买」重试' };
+        }
+        const plan = plansRef.current.find((p) => p.sku === purchase.productId);
+        const res = await PayApi.verifyAppleReceipt({
+          transaction_id: purchase.transactionId,
+          product_id: purchase.productId,
+          original_transaction_id: purchase.originalTransactionId,
+          transaction_date: purchase.transactionDate,
+          is_sandbox: isSandboxPurchase(purchase),
+          tag_id: plan?.tagId,
+          app_account_token: appAccountToken,
+        });
+        await finishPurchase(purchase);
+        await refreshUserInfo();
+        await refreshVip();
+        return { ok: true, endDate: res?.end_date };
+      } catch (e: any) {
+        return { ok: false, message: e?.message || '票据校验失败，请稍后重试' };
+      }
+    },
+    [appAccountToken, refreshUserInfo, refreshVip]
+  );
+
+  useEffect(() => {
+    verifyRef.current = verifyPurchase;
+  }, [verifyPurchase]);
+
+  /** 进入页面：拉取套餐（服务端价签）、建立内购连接、取 StoreKit 价格、补单 */
+  useEffect(() => {
+    let disposed = false;
+    let unsubUpdate: (() => void) | null = null;
+    let unsubError: (() => void) | null = null;
+
+    (async () => {
+      await refreshVip();
+      // 先拿服务端价签，产品 ID 由服务端下发
+      const skus = await loadPlans();
+      if (disposed) return;
+      if (!isIapSupported()) {
+        if (!disposed) setLoadingProducts(false);
+        return;
+      }
+      try {
+        await initIap();
+        if (disposed) return;
+
+        unsubUpdate = onPurchaseUpdate((purchase) => {
+          const pending = pendingRef.current;
+          if (pending) {
+            pendingRef.current = null;
+            pending.resolve(purchase);
+            return;
+          }
+          // 非主动购买：上次未完成的事务 / 自动续期，静默补单
+          void verifyRef.current(purchase, true);
+        });
+        unsubError = onPurchaseError((error) => {
+          const pending = pendingRef.current;
+          if (!pending) return;
+          pendingRef.current = null;
+          pending.reject(error);
+        });
+
+        const list = await fetchSubscriptions(skus);
+        if (disposed) return;
+        const map: Record<string, IapProduct> = {};
+        list.forEach((p) => {
+          map[p.productId] = p;
+        });
+        setProducts(map);
+        if (!list.length) {
+          setProductsError('暂未获取到商品价格，请确认 App Store 订阅已生效');
+        }
+
+        // 补单：上次支付成功但服务端未确认的订单
+        if (isLoggedInRef.current && !vipRef.current?.isVip) {
+          const unfinished = await fetchRestoreablePurchases();
+          if (disposed) return;
+          for (const item of unfinished) {
+            const result = await verifyRef.current(item, true);
+            if (result.ok) break;
+          }
+        }
+      } catch (e: any) {
+        if (!disposed) setProductsError(e?.message || '无法连接 App Store，请稍后重试');
+      } finally {
+        if (!disposed) setLoadingProducts(false);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unsubUpdate?.();
+      unsubError?.();
+      if (!pendingRef.current) void endIap();
+    };
+  }, [refreshVip, loadPlans]);
+
+  const promptLogin = (message: string) => {
+    Alert.alert('请先登录', message, [
+      { text: '取消', style: 'cancel' },
+      { text: '去登录', onPress: () => navigation.navigate('Login') },
+    ]);
   };
+
+  const handleBuy = async () => {
+    if (!isLoggedIn) {
+      promptLogin('会员权益需要绑定账号，换设备后可一键恢复');
+      return;
+    }
+    if (!isIapSupported()) {
+      Alert.alert('提示', 'App Store 内购仅支持 iOS 真机');
+      return;
+    }
+    // 价格展示不出来时不允许发起支付
+    if (!priceAvailable) {
+      Alert.alert('提示', '暂时无法获取商品价格，请检查网络后重试');
+      return;
+    }
+    setBuying(true);
+    try {
+      const purchase = await new Promise<IapPurchase>((resolve, reject) => {
+        pendingRef.current = { resolve, reject };
+        buySubscription(selectedPlan.sku, appAccountToken).catch((e) => {
+          if (pendingRef.current) {
+            pendingRef.current = null;
+          }
+          reject(e);
+        });
+      });
+      const result = await verifyPurchase(purchase);
+      if (result.ok) {
+        Alert.alert(
+          '开通成功',
+          result.endDate
+            ? `会员有效期至 ${formatDate(result.endDate)}`
+            : '会员权益已开通，感谢你的支持！'
+        );
+      } else {
+        Alert.alert('开通失败', result.message || '票据校验失败，请点击「恢复购买」重试');
+      }
+    } catch (e: any) {
+      // 用户主动取消不打扰
+      if (e?.userCancelled || isUserCancelled(e)) return;
+      Alert.alert('购买未完成', e?.message || '请稍后重试');
+    } finally {
+      setBuying(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    if (!isLoggedIn) {
+      promptLogin('恢复购买需要登录原账号');
+      return;
+    }
+    if (!isIapSupported()) {
+      Alert.alert('提示', 'App Store 内购仅支持 iOS 真机');
+      return;
+    }
+    setRestoring(true);
+    try {
+      await initIap();
+      const purchases = await fetchRestoreablePurchases();
+      if (!purchases.length) {
+        Alert.alert('没有可恢复的订单', '当前 Apple ID 下未查询到已购买的会员订单');
+        return;
+      }
+      // 取最近的一笔去服务端校验
+      const sorted = [...purchases].sort(
+        (a, b) => (b.transactionDate || 0) - (a.transactionDate || 0)
+      );
+      const result = await verifyPurchase(sorted[0], true);
+      if (result.ok) {
+        Alert.alert(
+          '恢复成功',
+          result.endDate
+            ? `会员有效期至 ${formatDate(result.endDate)}`
+            : '会员权益已恢复到当前账号'
+        );
+      } else {
+        Alert.alert('恢复失败', result.message || '未能恢复购买，请检查网络或 Apple ID');
+      }
+    } catch (e: any) {
+      Alert.alert('恢复失败', e?.message || '未能恢复购买，请检查网络或 Apple ID');
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  const openManageSubscription = async () => {
+    // 优先用 expo-iap 的原生深链（iOS 打开 App Store 订阅管理页）
+    const opened = isIapSupported() ? await openManageSubscriptions() : false;
+    if (opened) return;
+    try {
+      await Linking.openURL(MANAGE_SUBSCRIPTION_URL);
+    } catch {
+      Alert.alert('提示', '无法打开订阅管理页，可在 App Store → 账户 → 订阅中管理');
+    }
+  };
+
+  /**
+   * 金额一律取 StoreKit 返回的 displayPrice，
+   * 拿不到就显示占位符，绝不用本地写死的价格（Guideline 2.1 / 3.1.1）。
+   */
+  const priceTextOf = (plan: MemberPlan): string | null =>
+    products[plan.sku]?.localizedPrice || null;
+
+  /**
+   * 「省 X%」用 StoreKit 返回的价格数值换算，
+   * 只展示比例、不自己拼接任何金额文案。
+   */
+  const savePercentOf = (plan: MemberPlan): number | null => {
+    if (plan.months <= 1) return null;
+    const monthlyPlan = plans.find((p) => p.months === 1);
+    const target = products[plan.sku]?.price;
+    const monthly = monthlyPlan ? products[monthlyPlan.sku]?.price : undefined;
+    if (!target || !monthly) return null;
+    const percent = Math.round((1 - target / (monthly * plan.months)) * 100);
+    return percent > 0 ? percent : null;
+  };
+
+  // 拿不到价格时不允许发起支付（无法向用户展示应扣金额）
+  const priceAvailable = !!selectedProduct?.localizedPrice;
+  const busy = buying || restoring;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -72,6 +391,22 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
       <Header title="升级会员" onBack={() => navigation.goBack()} />
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+        {/* 已是会员时的状态卡 */}
+        {vip?.isVip ? (
+          <View style={styles.vipBanner}>
+            <Ionicons name="diamond" size={18} color={Colors.gold} />
+            <View style={styles.vipBannerTextWrap}>
+              <Text style={styles.vipBannerTitle}>VIP 会员已开通</Text>
+              <Text style={styles.vipBannerSub}>
+                {vip.endDate ? `有效期至 ${formatDate(vip.endDate)}` : '权益生效中'}
+              </Text>
+            </View>
+            <TouchableOpacity style={styles.vipManageBtn} onPress={openManageSubscription} activeOpacity={0.7}>
+              <Text style={styles.vipManageText}>管理订阅</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {/* 权益卡片 */}
         <View style={styles.benefitCard}>
           <Text style={styles.benefitTitle}>解锁全部权益</Text>
@@ -88,63 +423,119 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
           ))}
         </View>
 
+        {/* 未登录提示 */}
+        {!isLoggedIn ? (
+          <TouchableOpacity
+            style={styles.loginTip}
+            activeOpacity={0.7}
+            onPress={() => promptLogin('会员权益需要绑定账号，换设备后可一键恢复')}
+          >
+            <Ionicons name="person-circle-outline" size={16} color={Colors.primary} />
+            <Text style={styles.loginTipText}>登录后购买，换设备也能恢复会员</Text>
+            <Text style={styles.loginTipAction}>去登录</Text>
+          </TouchableOpacity>
+        ) : null}
+
         {/* 套餐选择 */}
         <View style={styles.plansContainer}>
-          {PLANS.map((plan) => {
+          {plans.map((plan) => {
             const selected = plan.id === selectedPlanId;
+            const priceText = priceTextOf(plan);
+            const savePercent = savePercentOf(plan);
             return (
               <TouchableOpacity
                 key={plan.id}
                 activeOpacity={0.8}
                 onPress={() => setSelectedPlanId(plan.id)}
                 style={[styles.planCard, selected && styles.planCardSelected]}
+                disabled={busy}
               >
                 <View style={styles.planLeft}>
                   <View style={[styles.radio, selected && styles.radioSelected]}>
-                    {selected && <View style={styles.radioDot} />}
+                    {selected ? <View style={styles.radioDot} /> : null}
                   </View>
                   <View style={styles.planInfo}>
                     <View style={styles.planTitleRow}>
                       <Text style={styles.planTitle}>{plan.label}</Text>
-                      {plan.save ? (
+                      {savePercent ? (
                         <View style={styles.saveBadge}>
-                          <Text style={styles.saveBadgeText}>省 {plan.save}%</Text>
+                          <Text style={styles.saveBadgeText}>省 {savePercent}%</Text>
                         </View>
                       ) : null}
                     </View>
-                    <Text style={styles.planMonthly}>{plan.monthlyPrice} / 月</Text>
+                    {/* 副标题用服务端价签名 / StoreKit 商品名，避免自行描述价格 */}
+                    <Text style={styles.planMonthly} numberOfLines={1}>
+                      {products[plan.sku]?.title || plan.tagName || ' '}
+                    </Text>
                   </View>
                 </View>
 
                 <View style={styles.planRight}>
-                  <Text style={styles.planPrice}>¥{plan.price}</Text>
-                  {plan.originalPrice && plan.originalPrice !== plan.price ? (
-                    <Text style={styles.planOriginalPrice}>
-                      ¥{plan.originalPrice}
-                    </Text>
-                  ) : null}
+                  {loadingProducts ? (
+                    <ActivityIndicator size="small" color={Colors.textMuted} />
+                  ) : priceText ? (
+                    <Text style={styles.planPrice}>{priceText}</Text>
+                  ) : (
+                    <Text style={styles.planPriceUnavailable}>—</Text>
+                  )}
                 </View>
               </TouchableOpacity>
             );
           })}
+          {plansError ? <Text style={styles.productsErrorText}>{plansError}</Text> : null}
+          {productsError && !loadingProducts ? (
+            <Text style={styles.productsErrorText}>{productsError}</Text>
+          ) : null}
         </View>
 
+        {/* 购买：金额只展示 StoreKit 返回的 displayPrice */}
         <TouchableOpacity
-          style={styles.buyButton}
+          style={[styles.buyButton, (busy || !priceAvailable) && styles.buyButtonDisabled]}
           activeOpacity={0.7}
           onPress={handleBuy}
+          disabled={busy || !priceAvailable}
         >
-          <Text style={styles.buyButtonText}>购买</Text>
+          {buying ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <Text style={styles.buyButtonText}>
+              {vip?.isVip ? '续费会员' : '立即开通'}
+              {priceAvailable ? ` · ${selectedProduct?.localizedPrice}` : ''}
+            </Text>
+          )}
         </TouchableOpacity>
+
+        {!priceAvailable && !loadingProducts ? (
+          <Text style={styles.productsErrorText}>暂时无法获取商品价格，请检查网络后重试</Text>
+        ) : null}
 
         <Text style={styles.subscriptionHint}>
           自动续费订阅，可随时在 App Store 的「订阅」中管理或取消。
+          {vip?.isVip ? '' : '确认购买后将从你的 Apple ID 账户扣款。'}
         </Text>
 
-        <View style={styles.footerLinks}>
-          <TouchableOpacity activeOpacity={0.6}>
-            <Text style={styles.footerLink}>恢复购买</Text>
+        {/* 恢复购买 / 管理订阅 */}
+        <View style={styles.actionRow}>
+          <TouchableOpacity
+            style={styles.actionBtn}
+            activeOpacity={0.7}
+            onPress={handleRestore}
+            disabled={busy}
+          >
+            {restoring ? (
+              <ActivityIndicator size="small" color={Colors.textSecondary} />
+            ) : (
+              <Ionicons name="refresh-outline" size={15} color={Colors.textSecondary} />
+            )}
+            <Text style={styles.actionBtnText}>恢复购买</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={styles.actionBtn} activeOpacity={0.7} onPress={openManageSubscription}>
+            <Ionicons name="settings-outline" size={15} color={Colors.textSecondary} />
+            <Text style={styles.actionBtnText}>管理订阅</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.footerLinks}>
           <TouchableOpacity
             activeOpacity={0.6}
             onPress={() =>
@@ -155,9 +546,7 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
           </TouchableOpacity>
           <TouchableOpacity
             activeOpacity={0.6}
-            onPress={() =>
-              navigation.navigate('WebPage', { url: POLICY_URL, title: '隐私政策' })
-            }
+            onPress={() => navigation.navigate('WebPage', { url: POLICY_URL, title: '隐私政策' })}
           >
             <Text style={styles.footerLink}>隐私政策</Text>
           </TouchableOpacity>
@@ -179,6 +568,41 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 32,
   },
+  vipBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.darkCard,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginTop: 16,
+  },
+  vipBannerTextWrap: {
+    flex: 1,
+    marginLeft: 10,
+  },
+  vipBannerTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.card,
+  },
+  vipBannerSub: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginTop: 2,
+  },
+  vipManageBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.gold,
+  },
+  vipManageText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.gold,
+  },
   benefitCard: {
     backgroundColor: Colors.darkCard,
     borderRadius: 16,
@@ -189,11 +613,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '700',
     color: Colors.card,
-  },
-  benefitSubtitle: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.6)',
-    marginTop: 4,
   },
   benefitRow: {
     flexDirection: 'row',
@@ -209,6 +628,26 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     color: 'rgba(255, 255, 255, 0.85)',
+  },
+  loginTip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  loginTipText: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.textSecondary,
+    marginLeft: 8,
+  },
+  loginTipAction: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.primary,
   },
   plansContainer: {
     marginTop: 24,
@@ -285,24 +724,24 @@ const styles = StyleSheet.create({
   planRight: {
     alignItems: 'flex-end',
     marginLeft: 12,
+    minWidth: 70,
   },
   planPrice: {
     fontSize: 22,
     fontWeight: '700',
     color: Colors.textPrimary,
   },
-  planOriginalPrice: {
-    fontSize: 13,
+  // 取不到 StoreKit 价格时的占位符，禁止回退成写死的金额
+  planPriceUnavailable: {
+    fontSize: 18,
+    fontWeight: '600',
     color: Colors.textMuted,
-    textDecorationLine: 'line-through',
-    marginTop: 2,
   },
-  notice: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: Colors.textSecondary,
+  productsErrorText: {
+    fontSize: 12,
+    color: Colors.danger,
     textAlign: 'center',
-    marginTop: 8,
+    marginTop: 4,
   },
   buyButton: {
     backgroundColor: Colors.card,
@@ -311,7 +750,11 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     paddingVertical: 12,
     alignItems: 'center',
+    justifyContent: 'center',
     marginTop: 16,
+  },
+  buyButtonDisabled: {
+    opacity: 0.6,
   },
   buyButtonText: {
     fontSize: 16,
@@ -325,9 +768,27 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 16,
   },
+  actionRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 20,
+    gap: 24,
+  },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  actionBtnText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+  },
   footerLinks: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'center',
+    gap: 24,
     marginTop: 24,
   },
   footerLink: {
