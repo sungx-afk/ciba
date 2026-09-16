@@ -36,6 +36,10 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "groups": ["CI 自动分发"]
+      }
+    }
   }
 }

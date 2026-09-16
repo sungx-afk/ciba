@@ -57,6 +57,7 @@ jobs:
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_KEY_ISSUER_ID: ${{ secrets.ASC_API_KEY_ISSUER_ID }}
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          TESTFLIGHT_GROUPS: ${{ secrets.TESTFLIGHT_GROUPS }}
         run: |
           node -e '
           const fs = require("fs");
@@ -75,7 +76,8 @@ jobs:
           write("app.json", app);
 
           const eas = read("eas.json");
-          const ios = {};
+          // 保留仓库里已声明的 submit.production.ios（如 groups），再让 Secrets 覆盖
+          const ios = { ...(eas.submit?.production?.ios || {}) };
           if (process.env.APPLE_TEAM_ID) ios.appleTeamId = process.env.APPLE_TEAM_ID;
           if (process.env.ASC_APP_ID) ios.ascAppId = process.env.ASC_APP_ID;
           if (process.env.ASC_API_KEY_P8) {
@@ -94,8 +96,15 @@ jobs:
             ios.ascApiKeyId = process.env.ASC_API_KEY_ID;
             ios.ascApiKeyIssuerId = process.env.ASC_API_KEY_ISSUER_ID;
           }
+          // 逗号分隔的 TestFlight 内部测试组名，留空则用 eas.json 里已配的 groups
+          const groups = (process.env.TESTFLIGHT_GROUPS || "")
+            .split(",")
+            .map((g) => g.trim())
+            .filter(Boolean);
+          if (groups.length) ios.groups = groups;
+
           eas.submit = eas.submit || {};
-          eas.submit.production = { ios };
+          eas.submit.production = { ...(eas.submit.production || {}), ios };
           write("eas.json", eas);
           console.log("EAS 配置已注入");
           '
