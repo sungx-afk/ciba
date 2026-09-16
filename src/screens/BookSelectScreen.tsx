@@ -20,7 +20,7 @@ interface BookSelectScreenProps {
 }
 
 export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }) => {
-  const { isLoggedIn, loadPackWords, currentPack, revertToLocal, setInstalledPack } = useProgress();
+  const { isLoggedIn, loadPackWords, currentPack, currentTopPack, revertToLocal } = useProgress();
   const [packs, setPacks] = useState<RemotePack[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingPackId, setLoadingPackId] = useState<number | null>(null);
@@ -32,10 +32,11 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
   const loadPacks = async () => {
     setLoading(true);
     try {
-      const { packs } = await packLibrary.fetchMarketPacks();
+      // 与首页顶部「我的卡组」下拉同一份数据: GET /anki/pack.json (parentId = 0)
+      const { packs } = await packLibrary.fetchMyPacks({ start: 0, limit: 100 });
       setPacks(packs);
     } catch (e: any) {
-      Alert.alert('加载失败', e?.message || '无法获取词库列表');
+      Alert.alert('加载失败', e?.message || '无法获取我的卡组');
     } finally {
       setLoading(false);
     }
@@ -52,27 +53,11 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
 
     setLoadingPackId(pack.id);
     try {
-      // 「我的卡组」里还没有它 -> 属于本次新安装，需要通知首页刷新卡组列表
-      let isNewInstall = false;
-      try {
-        const { packs: myPacks } = await packLibrary.fetchMyPacks({ start: 0, limit: 100 });
-        isNewInstall = !myPacks.some((p) => Number(p.id) === Number(pack.id));
-      } catch {
-        // 判断失败时按已安装处理，避免误触发首页的卡组同步等待
-      }
-
-      // 尝试安装 (已安装会忽略错误)
-      try {
-        await packLibrary.installPack(pack.id, pack.name);
-      } catch {
-        // 安装失败不影响加载 (可能已安装)
-      }
+      // 列表本身就是「我的卡组」，无需再走安装流程
       await loadPackWords(pack);
-      // 新安装的卡组交给首页去刷新「我的卡组」，并等待服务端复制完子卡组
-      if (isNewInstall) setInstalledPack(pack);
       navigation.goBack();
     } catch (e: any) {
-      Alert.alert('加载词库失败', e?.message || '请稍后重试');
+      Alert.alert('切换词库失败', e?.message || '请稍后重试');
     } finally {
       setLoadingPackId(null);
     }
@@ -85,12 +70,12 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <Header title="选择词库" onBack={() => navigation.goBack()} />
+      <Header title="切换词库" onBack={() => navigation.goBack()} />
 
       {loading ? (
         <View style={styles.loadingWrap}>
           <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.loadingText}>正在加载词库列表...</Text>
+          <Text style={styles.loadingText}>正在加载我的卡组...</Text>
         </View>
       ) : (
         <FlatList
@@ -115,7 +100,10 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
           //   </View>
           // }
           renderItem={({ item }) => {
-            const isActive = currentPack?.id === item.id;
+            // 与首页顶部「我的卡组」保持一致：优先按当前顶层卡组判定
+            const isActive =
+              [currentTopPack?.id, currentPack?.id].filter((id) => id !== undefined && id !== null)
+                .some((id) => Number(id) === Number(item.id));
             const isLoadingThis = loadingPackId === item.id;
             return (
               <TouchableOpacity
@@ -165,10 +153,17 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
           }}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
-              <Ionicons name="cloud-offline-outline" size={48} color={Colors.border} />
-              <Text style={styles.emptyText}>暂无可用词库</Text>
-              <TouchableOpacity style={styles.retryBtn} onPress={loadPacks}>
-                <Text style={styles.retryText}>重试</Text>
+              <Ionicons name="library-outline" size={48} color={Colors.border} />
+              <Text style={styles.emptyText}>我的卡组还是空的</Text>
+              <Text style={styles.emptyHint}>先去卡组市场添加词库，之后就能在这里直接切换</Text>
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={() => navigation.navigate('Market', { firstSetup: true })}
+              >
+                <Text style={styles.retryText}>去卡组市场</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryBtn} onPress={loadPacks}>
+                <Text style={styles.secondaryText}>刷新</Text>
               </TouchableOpacity>
             </View>
           }
@@ -330,8 +325,15 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 14,
-    color: Colors.textMuted,
+    color: Colors.textSecondary,
     marginTop: 12,
+  },
+  emptyHint: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginTop: 6,
+    textAlign: 'center',
+    paddingHorizontal: 40,
   },
   retryBtn: {
     marginTop: 16,
@@ -344,5 +346,14 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+  },
+  secondaryBtn: {
+    marginTop: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+  },
+  secondaryText: {
+    color: Colors.textMuted,
+    fontSize: 13,
   },
 });
