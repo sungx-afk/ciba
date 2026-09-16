@@ -109,19 +109,30 @@ jobs:
           console.log("EAS 配置已注入");
           '
 
-      - name: Build & Submit with EAS
+      - name: Build with EAS
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           PROFILE="${{ inputs.profile || 'production' }}"
-          SUBMIT="${{ inputs.submit || 'true' }}"
-          echo "profile=$PROFILE submit=$SUBMIT"
-          # 只有 production（store 分发）才能上传 TestFlight
-          if [ "$PROFILE" = "production" ] && [ "$SUBMIT" = "true" ]; then
-            eas build --platform ios --profile "$PROFILE" --auto-submit --non-interactive
-          else
-            eas build --platform ios --profile "$PROFILE" --non-interactive
-          fi
+          echo "profile=$PROFILE"
+          eas build --platform ios --profile "$PROFILE" --non-interactive
+
+      # 上传与构建分开：fastlane 偶发在上传成功后的收尾阶段返回非零，
+      # 不能让「包已经好了」被误判成整条流水线失败
+      - name: Submit to TestFlight
+        id: submit
+        # 只有 production（store 分发）才能上传 TestFlight
+        if: ${{ (inputs.profile || 'production') == 'production' && inputs.submit != false }}
+        continue-on-error: true
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas submit --platform ios --latest --non-interactive
+
+      - name: Submission Warning
+        if: ${{ steps.submit.outcome == 'failure' }}
+        run: |
+          echo "::warning title=eas::TestFlight 上传未成功（构建本身已成功）"
+          echo "::warning title=eas::IPA 已生成，可本地执行 eas submit --platform ios --latest 重试"
 
       - name: Failure Hints
         if: failure()
