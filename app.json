@@ -18,6 +18,7 @@
       "bundleIdentifier": "com.cibaenglish.app",
       "buildNumber": "11",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "CFBundleURLTypes": [
           {
             "CFBundleURLName": "weixin",
