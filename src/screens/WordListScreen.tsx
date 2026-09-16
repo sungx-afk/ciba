@@ -4,13 +4,13 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  TextInput,
   TouchableOpacity,
   SafeAreaView,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
-import { Colors, getCategoryColor } from '../theme/colors';
+import { Colors } from '../theme/colors';
 import { WordCard } from '../components/WordCard';
 import { Header } from '../components/Header';
 
@@ -23,9 +23,16 @@ type FilterType = 'all' | 'unlearned' | 'mastered' | 'bookmarked';
 
 export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigation }) => {
   const { category, subCategory, source, title: routeTitle } = route.params || {};
-  const { state, toggleBookmark, words, todayWords, packWords, todayWordsPackId, packWordsPackId } =
-    useProgress();
-  const [searchQuery, setSearchQuery] = useState('');
+  const {
+    state,
+    toggleBookmark,
+    recordReview,
+    words,
+    todayWords,
+    packWords,
+    todayWordsPackId,
+    packWordsPackId,
+  } = useProgress();
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
 
   const title =
@@ -53,18 +60,18 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
       if (activeFilter === 'unlearned' && isMastered) return false;
       if (activeFilter === 'bookmarked' && !isBookmarked) return false;
 
-      // 搜索筛选
-      if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase().trim();
-        const matchWord = w.word.toLowerCase().includes(query);
-        const matchMeaning = w.meaning.toLowerCase().includes(query);
-        const matchNote = w.note.toLowerCase().includes(query);
-        if (!matchWord && !matchMeaning && !matchNote) return false;
-      }
-
       return true;
     });
-  }, [baseWords, state.progressMap, activeFilter, searchQuery]);
+  }, [baseWords, state.progressMap, activeFilter]);
+
+  /** 标记为「已记住」：与闪卡页「已记住」按钮同一个接口（上报 type=4） */
+  const handleMarkMastered = async (wordId: number) => {
+    try {
+      await recordReview(wordId, 'remembered');
+    } catch (e: any) {
+      Alert.alert('保存失败', e?.message || '标记已记住失败，请重试');
+    }
+  };
 
   const handleStartStudy = () => {
     if (source === 'today' || source === 'pack') {
@@ -95,26 +102,6 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
           onPress: handleStartStudy,
         }}
       />
-
-      {/* 搜索框 */}
-      <View style={styles.searchWrap}>
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={18} color={Colors.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="搜索单词、释义或词根助记..."
-            placeholderTextColor={Colors.textMuted}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            clearButtonMode="while-editing"
-          />
-          {searchQuery ? (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
-              <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      </View>
 
       {/* 状态过滤 Tab */}
       <View style={styles.filterRow}>
@@ -151,6 +138,7 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
             progress={state.progressMap[item.id]}
             accent={state.accent}
             onToggleBookmark={() => toggleBookmark(item.id)}
+            onMarkMastered={() => handleMarkMastered(item.id)}
             onPress={() =>
               navigation.navigate('Flashcard', {
                 singleWordId: item.id,
@@ -175,30 +163,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  searchWrap: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: Colors.background,
-  },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.card,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    height: 40,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  searchInput: {
-    flex: 1,
-    marginLeft: 8,
-    fontSize: 14,
-    color: Colors.textPrimary,
-  },
   filterRow: {
     flexDirection: 'row',
     paddingHorizontal: 16,
+    paddingTop: 10,
     marginBottom: 8,
     gap: 8,
   },

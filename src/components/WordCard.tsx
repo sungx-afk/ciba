@@ -11,6 +11,8 @@ interface WordCardProps {
   accent?: 'en-US' | 'en-GB';
   onPress?: () => void;
   onToggleBookmark?: () => void;
+  /** 标记为「已记住」，仅未掌握的单词展示该按钮 */
+  onMarkMastered?: () => void;
   showMeaning?: boolean;
   /** 是否显示右上角收藏图标（生词本内不需要） */
   showBookmark?: boolean;
@@ -22,6 +24,7 @@ export const WordCard: React.FC<WordCardProps> = ({
   accent = 'en-US',
   onPress,
   onToggleBookmark,
+  onMarkMastered,
   showMeaning = true,
   showBookmark = true,
 }) => {
@@ -37,6 +40,11 @@ export const WordCard: React.FC<WordCardProps> = ({
   const handleBookmark = (e: any) => {
     e.stopPropagation?.();
     onToggleBookmark?.();
+  };
+
+  const handleMarkMastered = (e: any) => {
+    e.stopPropagation?.();
+    onMarkMastered?.();
   };
 
   return (
@@ -65,6 +73,19 @@ export const WordCard: React.FC<WordCardProps> = ({
             </View>
           ) : null}
 
+          {!isMastered && onMarkMastered ? (
+            <TouchableOpacity
+              style={styles.markBtn}
+              onPress={handleMarkMastered}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="标记为已记住"
+              activeOpacity={0.7}
+            >
+              <Ionicons name="checkmark" size={12} color={Colors.success} />
+              <Text style={styles.markBtnText}>记住</Text>
+            </TouchableOpacity>
+          ) : null}
+
           {showBookmark && onToggleBookmark ? (
             <TouchableOpacity
               style={styles.bookmarkBtn}
@@ -87,12 +108,16 @@ export const WordCard: React.FC<WordCardProps> = ({
           {word.cat ? (
             <View style={[styles.catTag, { backgroundColor: catColor + '18' }]}>
               <View style={[styles.catDot, { backgroundColor: catColor }]} />
-              <Text style={[styles.catText, { color: catColor }]}>{word.cat}</Text>
+              <Text style={[styles.catText, { color: catColor }]} numberOfLines={1}>
+                {word.cat}
+              </Text>
             </View>
           ) : null}
           {word.sub ? (
             <View style={styles.subTag}>
-              <Text style={styles.subText}>{word.sub}</Text>
+              <Text style={styles.subText} numberOfLines={1}>
+                {word.sub}
+              </Text>
             </View>
           ) : null}
         </View>
@@ -169,6 +194,21 @@ const styles = StyleSheet.create({
     color: Colors.success,
     marginLeft: 3,
   },
+  markBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: Colors.success + '15',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    marginRight: 8,
+  },
+  markBtnText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.success,
+  },
   bookmarkBtn: {
     padding: 4,
   },
@@ -177,6 +217,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 8,
     gap: 6,
+    flexWrap: 'wrap',
+    rowGap: 6,
   },
   catTag: {
     flexDirection: 'row',
@@ -184,26 +226,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
+    flexShrink: 1,
+    maxWidth: '100%',
   },
   catDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     marginRight: 5,
+    flexShrink: 0,
   },
   catText: {
     fontSize: 11,
     fontWeight: '600',
+    flexShrink: 1,
   },
   subTag: {
     backgroundColor: Colors.divider,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
+    flexShrink: 1,
+    maxWidth: '100%',
   },
   subText: {
     fontSize: 11,
     color: Colors.textSecondary,
+    flexShrink: 1,
   },
   meaningText: {
     fontSize: 15,
