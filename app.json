@@ -11,7 +11,7 @@
     "splash": {
       "image": "./src/assets/icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#FDFAF4"
+      "backgroundColor": "#F8FBFC"
     },
     "ios": {
       "supportsTablet": false,
@@ -37,7 +37,7 @@
       "package": "com.cibaenglish.app",
       "adaptiveIcon": {
         "foregroundImage": "./src/assets/adaptive-icon.png",
-        "backgroundColor": "#FDFAF4"
+        "backgroundColor": "#F8FBFC"
       }
     },
     "web": {

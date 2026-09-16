@@ -50,7 +50,7 @@ export const AuthInput: React.FC<AuthInputProps> = ({
           <Ionicons
             name={iconName}
             size={19}
-            color={isFocused ? Colors.primary : '#9E9689'}
+            color={isFocused ? Colors.primary : '#8BA5B5'}
             style={styles.leftIcon}
           />
         )}
@@ -64,7 +64,7 @@ export const AuthInput: React.FC<AuthInputProps> = ({
 
         <TextInput
           style={[styles.input, style]}
-          placeholderTextColor="#B8B0A2"
+          placeholderTextColor="#8BA5B5"
           secureTextEntry={isPassword && !showPassword}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
@@ -84,7 +84,7 @@ export const AuthInput: React.FC<AuthInputProps> = ({
             <Ionicons
               name={showPassword ? 'eye-outline' : 'eye-off-outline'}
               size={19}
-              color="#A8A092"
+              color="#8BA5B5"
             />
           </TouchableOpacity>
         )}
@@ -97,7 +97,7 @@ export const AuthInput: React.FC<AuthInputProps> = ({
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Ionicons name="close-circle" size={17} color="#B8B0A2" />
+            <Ionicons name="close-circle" size={17} color="#8BA5B5" />
           </TouchableOpacity>
         )}
 
@@ -117,14 +117,14 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#6B6051',
+    color: '#35566A',
     marginBottom: 6,
     marginLeft: 4,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8F6F0',
+    backgroundColor: '#EEF5F7',
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'transparent',
@@ -133,7 +133,7 @@ const styles = StyleSheet.create({
   },
   inputWrapperFocused: {
     backgroundColor: '#FFFFFF',
-    borderColor: '#F1D5B2',
+    borderColor: '#B7D3DB',
     ...Platform.select({
       ios: {
         shadowColor: Colors.primary,
@@ -147,8 +147,8 @@ const styles = StyleSheet.create({
     }),
   },
   inputWrapperError: {
-    borderColor: '#FFAAA8',
-    backgroundColor: '#FFF8F8',
+    borderColor: '#F8D4CB',
+    backgroundColor: '#FDF3F1',
   },
   leftIcon: {
     marginRight: 10,
@@ -161,18 +161,18 @@ const styles = StyleSheet.create({
   prefixText: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#383024',
+    color: '#35566A',
   },
   prefixDivider: {
     width: 1,
     height: 14,
-    backgroundColor: '#DDD5C8',
+    backgroundColor: '#C3D9E1',
     marginLeft: 8,
   },
   input: {
     flex: 1,
     fontSize: 16,
-    color: '#1F1A12',
+    color: '#1E3A4C',
     height: '100%',
     paddingVertical: 0,
     fontWeight: '500',
@@ -186,7 +186,7 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 12,
-    color: '#EA4C4C',
+    color: '#E76F51',
     marginTop: 4,
     marginLeft: 6,
   },
