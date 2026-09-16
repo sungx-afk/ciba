@@ -85,3 +85,76 @@ eas login
   ```
 
 构建完成后，EAS 会直接在终端提供下载链接，点击即可下载安装包。
+
+---
+
+## 真机签名包与 TestFlight 内测
+
+本机是 macOS 13 + Xcode 15 的情况下无法调试 iOS 18+ 真机，上架/内测包统一走 **EAS 云端构建**：云端自带 Xcode 16，自动完成编译、签名、上传 TestFlight。
+
+### 一次性准备（在本机执行，只需做一次）
+
+```bash
+npm install -g eas-cli
+eas login                        # 登录 Expo 账号
+eas init                         # 生成项目，把 extra.eas.projectId 写入 app.json
+eas credentials --platform ios   # 按提示登录 Apple，让 EAS 托管分发证书与描述文件
+```
+
+> ⚠️ 菜单里 profile 要选 **production**（App Store 分发，**无需注册测试设备**）。
+> 若选了 internal 类 profile，EAS 会要求 Ad Hoc 设备 UDID 并报
+> `Run 'eas device:create' to register your devices first`——那是另一条路，见文末。
+
+在 [expo.dev/settings/access-tokens](https://expo.dev/settings/access-tokens) 生成 **Personal Access Token**；
+在 App Store Connect → 用户和访问 → 密钥 生成 **API Key**，下载 `.p8`（只能下载一次）。
+
+### 配置 GitHub Secrets
+
+仓库 Settings → Secrets and variables → Actions：
+
+| Secret | 说明 |
+| --- | --- |
+| `EXPO_TOKEN` | Expo Personal Access Token |
+| `EXPO_PROJECT_ID` | `eas init` 后 `app.json` 里的 `extra.eas.projectId` |
+| `ASC_API_KEY_ID` | App Store Connect API Key 的 Key ID |
+| `ASC_API_KEY_ISSUER_ID` | App Store Connect API Key 的 Issuer ID |
+| `ASC_API_KEY_P8` | `.p8` 文件**内容**（不是路径，见下方说明） |
+| `APPLE_TEAM_ID` | Apple Developer Team ID（选填） |
+| `ASC_APP_ID` | App Store Connect 里 App 的 Apple ID（选填，可跳过创建 App 步骤） |
+
+#### `ASC_API_KEY_P8` 怎么填
+
+Secret 是纯文本框，填的是**文件内容**。推荐先把内容拷到剪贴板：
+
+```bash
+pbcopy < ~/Downloads/AuthKey_XXXXXXXXXX.p8
+```
+
+然后在 Secret 的 **Value** 框里 `Cmd+V` 粘贴即可（会带换行，GitHub 能正常保存）。
+
+如果粘贴后换行被吃掉，改用 base64 一行版（workflow 两种都认）：
+
+```bash
+base64 -i ~/Downloads/AuthKey_XXXXXXXXXX.p8 | pbcopy
+```
+
+填好后**把本地的 `.p8` 删掉或移出仓库目录**，切勿提交进 git。
+
+### 触发构建
+
+- 推 tag：`git tag v1.1.1 && git push origin v1.1.1`
+- 或手动：Actions → **EAS Build & Submit iOS** → Run workflow（可选 `production` / `preview-device`，以及是否上传 TestFlight）
+
+构建产物与下载链接在 [expo.dev](https://expo.dev) 对应项目页；上传成功约 10~15 分钟后可在 TestFlight 安装，沙箱内购即可正常测试。
+
+### 附：绕过 TestFlight 直接装到手机（Ad Hoc）
+
+`preview-device` profile 是 internal 分发，依赖 Ad Hoc 描述文件，需要先注册设备 UDID：
+
+```bash
+eas device:create   # 终端会给出一个链接，用 iPhone 打开并点击注册即可
+eas device:list     # 确认设备已入列表
+eas build --platform ios --profile preview-device
+```
+
+之后这份构建在 expo.dev 上会给出安装链接，注册过的设备可直接打开安装，无需等待 TestFlight 处理。

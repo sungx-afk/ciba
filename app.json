@@ -2,7 +2,7 @@
   "expo": {
     "name": "糍粑英语",
     "slug": "ciba-english",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "scheme": "cibaenglish",
     "orientation": "portrait",
     "icon": "./src/assets/icon.png",
@@ -49,6 +49,12 @@
       "expo-font",
       "expo-apple-authentication",
       "react-native-iap"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "aa18246f-2123-4e53-ba40-36f7f1eeb68f"
+      }
+    },
+    "owner": "meliushuangs-team"
   }
 }
