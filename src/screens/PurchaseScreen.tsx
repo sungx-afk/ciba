@@ -378,6 +378,15 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
   const priceAvailable = !!selectedProduct?.localizedPrice;
   const busy = buying || restoring;
 
+  /**
+   * 计价币种由 Apple ID 所在商店地区决定，客户端改不了（Guideline 2.1 / 3.1.1）。
+   * 非人民币时明确告知，避免用户把美元价格当成人民币。
+   */
+  const currencyHint =
+    selectedProduct?.currency && selectedProduct.currency !== 'CNY'
+      ? `当前按 App Store 账户地区（${selectedProduct.currency}）计价，实际扣款币种与 Apple ID 所在地区一致。`
+      : '';
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
@@ -501,6 +510,8 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
         {!priceAvailable && !loadingProducts ? (
           <Text style={styles.productsErrorText}>暂时无法获取商品价格，请检查网络后重试</Text>
         ) : null}
+
+        {currencyHint ? <Text style={styles.currencyHintText}>{currencyHint}</Text> : null}
 
         <Text style={styles.subscriptionHint}>
           自动续费订阅，可随时在 App Store 的「订阅」中管理或取消。
@@ -760,6 +771,13 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     textAlign: 'center',
     marginTop: 16,
+  },
+  currencyHintText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginTop: 10,
   },
   actionRow: {
     flexDirection: 'row',

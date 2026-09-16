@@ -97,7 +97,8 @@ function mapProduct(p: any): IapProduct {
     title: p?.title || '',
     description: p?.description || '',
     localizedPrice: p?.localizedPrice || '',
-    currency: p?.currency || 'CNY',
+    // 拿不到币种时留空：默认成 CNY 会让上层误以为是人民币计价
+    currency: p?.currency || '',
     price: typeof p?.price === 'string' ? Number(p.price) : Number(p?.price || 0) || 0,
   };
 }
