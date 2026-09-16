@@ -24,7 +24,7 @@ export interface VipStatus {
  * 后端价签（/pay/price_tags）
  *
  * 实际返回示例：
- * {"num":1,"name":"连续包月 VIP","appleProductId":"com.yugusoft.CibaEnglish.vip.monthly","id":101,"type":2}
+ * {"num":1,"name":"连续包月 VIP","appleProductId":"com.yugusoft.CibaEnglish.category.monthly","id":101,"type":2}
  *
  * 注意：即便接口里带了 price 也**不要展示**，
  * 界面金额一律用 StoreKit 的 displayPrice（Guideline 2.1 / 3.1.1）。
@@ -51,7 +51,7 @@ export interface AppleVerifyPayload {
    * 后端拿它调 App Store Server API v2 的交易查询接口核销。
    */
   transaction_id: string;
-  /** 购买的产品 ID，如 com.yugusoft.CibaEnglish.vip.monthly */
+  /** 购买的产品 ID，如 com.yugusoft.CibaEnglish.category.monthly */
   product_id?: string;
   /** 原始交易 ID（续期不变，服务端按它去重） */
   original_transaction_id?: string;
@@ -105,7 +105,7 @@ export const PayApi = {
    *
    * 参数：
    *   transaction_id          必填，StoreKit 2 交易 ID（expo-iap 的 purchase.id）
-   *   product_id              产品 ID，如 com.yugusoft.CibaEnglish.vip.monthly
+   *   product_id              产品 ID，如 com.yugusoft.CibaEnglish.category.monthly
    *   original_transaction_id 原始交易 ID，续期不变，服务端按它去重
    *   transaction_date        交易时间（毫秒）
    *   is_sandbox              1 沙箱 / 0 生产

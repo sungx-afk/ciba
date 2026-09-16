@@ -88,14 +88,14 @@ export function priceTagToPlan(tag: PriceTag): MemberPlan | null {
 export const FALLBACK_PLANS: MemberPlan[] = [
   {
     id: 'yearly',
-    sku: 'com.yugusoft.CibaEnglish.vip.yearly',
+    sku: 'com.yugusoft.CibaEnglish.category.yearly',
     label: '1 年',
     months: 12,
     tagId: 102,
   },
   {
     id: 'monthly',
-    sku: 'com.yugusoft.CibaEnglish.vip.monthly',
+    sku: 'com.yugusoft.CibaEnglish.category.monthly',
     label: '1 个月',
     months: 1,
     tagId: 101,

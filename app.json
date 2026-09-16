@@ -15,8 +15,7 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.cibaenglish.app",
-      "buildNumber": "11",
+      "bundleIdentifier": "com.yugusoft.CibaEnglish.category",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "CFBundleURLTypes": [
