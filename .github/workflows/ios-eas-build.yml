@@ -121,12 +121,20 @@ jobs:
       # 不能让「包已经好了」被误判成整条流水线失败
       - name: Submit to TestFlight
         id: submit
-        # 只有 production（store 分发）才能上传 TestFlight
-        if: ${{ (inputs.profile || 'production') == 'production' && inputs.submit != false }}
+        # 判定放在 shell 里做：tag 触发时 inputs.* 为空，
+        # 表达式 inputs.submit != false 会因类型转换（null -> 0）被判为 false 而误跳过
         continue-on-error: true
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas submit --platform ios --latest --non-interactive
+        run: |
+          PROFILE="${{ inputs.profile || 'production' }}"
+          SUBMIT="${{ inputs.submit }}"
+          # 只有 production（store 分发）才上传 TestFlight；空值按 true 处理
+          if [ "$PROFILE" = "production" ] && [ "$SUBMIT" != "false" ]; then
+            eas submit --platform ios --latest --non-interactive
+          else
+            echo "跳过上传: profile=$PROFILE submit=$SUBMIT"
+          fi
 
       - name: Submission Warning
         if: ${{ steps.submit.outcome == 'failure' }}
