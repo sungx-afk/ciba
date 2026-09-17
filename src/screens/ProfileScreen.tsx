@@ -184,14 +184,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <Text style={styles.statNum}>{stats.masteredCount}</Text>
               <Text style={styles.statLbl}>已掌握单词</Text>
             </View>
-            <View style={styles.statBox}>
-              <Text style={styles.statNum}>{stats.learningCount}</Text>
-              <Text style={styles.statLbl}>正在学习</Text>
-            </View>
-            <View style={styles.statBox}>
-              <Text style={styles.statNum}>{stats.totalWords}</Text>
-              <Text style={styles.statLbl}>词库总容量</Text>
-            </View>
           </View>
         </View>
 

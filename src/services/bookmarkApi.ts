@@ -45,6 +45,11 @@ export interface BookmarkedWordPage {
 
 let cachedPackId = 0;
 
+/** 切换账号后调用：默认卡组 id 是按账号的，必须失效重取 */
+export function clearBookmarkPackCache() {
+  cachedPackId = 0;
+}
+
 /** 1. 取默认卡组 id */
 export async function fetchDefaultMoviePackId(force = false): Promise<number> {
   if (!force && cachedPackId) return cachedPackId;

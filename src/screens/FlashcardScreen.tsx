@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,13 +11,22 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
+import { useAuth } from '../context/AuthContext';
 import { packLibrary } from '../services/packLibrary';
 import { Word } from '../types';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { pronounceWord } from '../utils/speech';
+import { showToast } from '../utils/toast';
+import { getWordExtras } from '../utils/wordExtras';
+import { playRememberedSound } from '../utils/effectSound';
 import { Header } from '../components/Header';
 import { ProgressBar } from '../components/ProgressBar';
+import { RichText } from '../components/RichText';
+import { SectionBadge } from '../components/SectionBadge';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { checkVipGate, clearVipGateCache } from '../services/vipGate';
 
 /** 今日学习单词一次拉取的数量（与首页保持一致） */
 const TODAY_WORD_LIMIT = 50;
@@ -43,6 +52,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     onlyDue,
     filter,
     wordIds,
+    startWordId,
     queueWords,
     title,
     packCat,
@@ -62,6 +72,8 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     loadTodayWords,
     currentTopPack,
   } = useProgress();
+  // 会员状态与注册时间都来自用户信息
+  const { user, refreshUserInfo } = useAuth();
 
   /** 顶层卡组名: 继续学习下一个卡组时，作为新单词的 cat 标记 */
   const topPackName = packCat || currentTopPack?.name || '';
@@ -186,7 +198,9 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
    * 使用稳定排序，保证同组内维持原有顺序。
    */
   const orderedQueue: Word[] = useMemo(() => {
-    const isMastered = (w: Word) => (state.progressMap[w.id]?.status === 'mastered' ? 1 : 0);
+    // 与单词列表页一致：服务端 type=4 也算已记住，避免两处判断不一致
+    const isMastered = (w: Word) =>
+      w.type === 4 || state.progressMap[w.id]?.status === 'mastered' ? 1 : 0;
     return rawQueue
       .map((w, index) => ({ w, index, mastered: isMastered(w) }))
       .sort((a, b) => a.mastered - b.mastered || a.index - b.index)
@@ -212,21 +226,67 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     return list;
   }, [orderedQueue]);
 
-  const [currentIndex, setCurrentIndex] = useState(0);
+  /** 初始位置：列表页点的是哪个单词，就从这个单词开始背 */
+  const [currentIndex, setCurrentIndex] = useState(() => {
+    const idx = startWordId ? studyQueue.findIndex((w) => w.id === startWordId) : -1;
+    return idx > 0 ? idx : 0;
+  });
   const [showAnswer, setShowAnswer] = useState(false);
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [learnedInSessionCount, setLearnedInSessionCount] = useState(0);
   // 正在上报本次评分，避免连点导致跳过多张卡片
   const [grading, setGrading] = useState(false);
+  /** 被会员限制拦截下来的评分，开通会员后自动继续 */
+  const pendingGradeRef = useRef<'hard' | 'remembered' | null>(null);
+  /** 需要升级会员时的提示文案（非空即弹窗） */
+  const [vipGateMessage, setVipGateMessage] = useState<string | null>(null);
 
   const currentWord = studyQueue[currentIndex];
   const progressInfo = currentWord ? state.progressMap[currentWord.id] : undefined;
   const isBookmarked = progressInfo?.isBookmarked || false;
 
+  /** 单词深度解析：音标 / 词义辨析 / 巧记联想 / 场景例句 */
+  const extras = useMemo(
+    () =>
+      currentWord
+        ? getWordExtras(currentWord)
+        : { phonetic: '', wordDifference: '', memoryMethod: '', sentences: [] },
+    [currentWord]
+  );
+
+  /** 词包级「分类词汇辨析」：取自卡组详情 summary */
+  const [packSummary, setPackSummary] = useState('');
+  useEffect(() => {
+    const targetId = Number(packId || currentWord?.packageId || 0);
+    if (!targetId) {
+      setPackSummary('');
+      return;
+    }
+    // 已加载过的顶层卡组就不再单独请求
+    if (Number((currentTopPack as any)?.id) === targetId) {
+      setPackSummary(String((currentTopPack as any)?.summary || ''));
+      return;
+    }
+    let cancelled = false;
+    packLibrary
+      .fetchPackDetail(targetId)
+      .then((pack) => {
+        if (!cancelled) setPackSummary(String((pack as any)?.summary || ''));
+      })
+      .catch(() => {
+        if (!cancelled) setPackSummary('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [packId, currentWord?.packageId, currentTopPack]);
+
   /** 加入/取消生词本：加入会调服务端 /anki/movie2card，失败时不改本地状态 */
   const handleToggleBookmark = async (wordId: number, wordName?: string) => {
+    const wasBookmarked = !!state.progressMap[wordId]?.isBookmarked;
     try {
       await toggleBookmark(wordId, wordName);
+      if (!wasBookmarked) showToast('已加入生词本');
     } catch (e: any) {
       Alert.alert('加入生词本失败', e?.message || '请检查网络后重试');
     }
@@ -251,7 +311,20 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     if (!currentWord || grading) return;
     setGrading(true);
     try {
+      // 非会员达到免费额度时先拦截，引导升级会员后再继续
+      const gate = await checkVipGate({
+        userVip: (user as any)?.vip,
+        masteredCount: stats.masteredCount,
+        createDate: (user as any)?.createDate,
+      });
+      if (gate.blocked) {
+        pendingGradeRef.current = grade;
+        setVipGateMessage(gate.message || '升级 VIP 会员后可继续使用');
+        return;
+      }
+
       await recordReview(currentWord.id, grade);
+      if (grade === 'remembered') playRememberedSound();
       setLearnedInSessionCount((prev) => prev + 1);
 
       if (currentIndex + 1 < studyQueue.length) {
@@ -266,6 +339,45 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       setGrading(false);
     }
   };
+
+  // 供「从会员页返回」时调用最新的 handleGrade
+  const handleGradeRef = useRef(handleGrade);
+  useEffect(() => {
+    handleGradeRef.current = handleGrade;
+  }, [handleGrade]);
+
+  /**
+   * 从会员页返回：先刷新用户信息与会员状态，
+   * 已开通会员就自动继续刚才被拦截的「明天复习 / 已记住」。
+   */
+  useFocusEffect(
+    useCallback(() => {
+      const pending = pendingGradeRef.current;
+      if (!pending) return;
+      (async () => {
+        clearVipGateCache();
+        try {
+          await refreshUserInfo?.();
+        } catch {
+          // 刷新失败不阻断，下面仍会按最新接口结果判断
+        }
+        const gate = await checkVipGate({
+          userVip: (user as any)?.vip,
+          masteredCount: stats.masteredCount,
+          createDate: (user as any)?.createDate,
+        });
+        if (gate.blocked) {
+          // 没开通就丢弃待办：否则每次回到页面都会重复刷新并一直挂着这次操作
+          pendingGradeRef.current = null;
+          return;
+        }
+        pendingGradeRef.current = null;
+        showToast('会员已开通，继续学习');
+        handleGradeRef.current(pending);
+      })();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user, stats.masteredCount])
+  );
 
   const handleManualPronounce = () => {
     if (currentWord) {
@@ -490,6 +602,9 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
           {/* 核心单词大字 */}
           <View style={styles.wordCenter}>
             <Text style={styles.mainWordText}>{currentWord.word}</Text>
+            {extras.phonetic ? (
+              <Text style={styles.wordPhonetic}>{extras.phonetic}</Text>
+            ) : null}
             <TouchableOpacity
               style={styles.soundButton}
               onPress={handleManualPronounce}
@@ -504,23 +619,103 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
           {!showAnswer ? (
             <View style={styles.tapToReveal}>
               <Ionicons name="eye-outline" size={20} color={Colors.textMuted} />
-              <Text style={styles.tapToRevealText}>点击卡片查看中文释义与助记</Text>
+              <Text style={styles.tapToRevealText}>点击卡片查看释义、辨析与巧记</Text>
             </View>
           ) : (
             <View style={styles.answerSection}>
               <View style={styles.dividerLine} />
 
-              {/* 中文释义 */}
-              <View style={styles.meaningBox}>
-                <Text style={styles.meaningLabel}>中文释义</Text>
-                <Text style={styles.meaningContent}>{currentWord.meaning}</Text>
-              </View>
+              {/* 1. 核心中文释义 */}
+              {currentWord.meaning ? (
+                <View style={styles.bentoSection}>
+                  <SectionBadge icon="pricetag-outline" label="核心释义" color={Colors.primary} />
+                  <RichText text={currentWord.meaning} style={styles.textMeaning} />
+                </View>
+              ) : null}
 
-              {/* 词根/助记/例句 */}
-              {currentWord.note ? (
-                <View style={styles.noteBox}>
-                  <Text style={styles.noteLabel}>助记与例句</Text>
-                  <Text style={styles.noteContent}>{currentWord.note}</Text>
+              {/* 2. 词义辨析 / 用法区别 */}
+              {extras.wordDifference ? (
+                <View style={styles.bentoSection}>
+                  <SectionBadge icon="git-compare-outline" label="词义辨析" color={Colors.dark} />
+                  <RichText
+                    text={extras.wordDifference}
+                    style={styles.textContent}
+                    boldStyle={styles.boldStrong}
+                  />
+                </View>
+              ) : null}
+
+              {/* 3. 巧记联想 / 记忆技巧 */}
+              {extras.memoryMethod ? (
+                <View style={styles.bentoSection}>
+                  <SectionBadge icon="bulb-outline" label="巧记联想" color={Colors.accent} />
+                  <View style={styles.memoryInner}>
+                    <RichText
+                      text={extras.memoryMethod}
+                      style={styles.textContent}
+                      boldStyle={styles.boldStrong}
+                    />
+                  </View>
+                </View>
+              ) : null}
+
+              {/* 4. 双语场景例句 */}
+              {extras.sentences.length ? (
+                <View style={styles.bentoSection}>
+                  <SectionBadge
+                    icon="chatbubble-ellipses-outline"
+                    label="场景例句"
+                    color={Colors.secondary}
+                  />
+                  <View style={styles.sentencesList}>
+                    {extras.sentences.map((s, idx) => (
+                      <View key={idx} style={styles.sentenceItem}>
+                        {s.english ? (
+                          <RichText
+                            text={s.english}
+                            style={styles.enSentence}
+                            boldStyle={styles.boldStrong}
+                          />
+                        ) : null}
+                        {s.chinese ? (
+                          <RichText text={s.chinese} style={styles.cnSentence} />
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              {/* 5. 词包全局分类词汇辨析 */}
+              {packSummary ? (
+                <View style={styles.bentoSection}>
+                  <SectionBadge
+                    icon="library-outline"
+                    label="分类词汇辨析"
+                    color={Colors.pinwheelBlue}
+                  />
+                  <View style={styles.summaryInner}>
+                    <RichText
+                      text={packSummary}
+                      style={styles.textContent}
+                      boldStyle={styles.boldStrong}
+                    />
+                  </View>
+                </View>
+              ) : null}
+
+              {/* 兜底：没有任何结构化信息时仍显示原始 note */}
+              {!extras.wordDifference &&
+              !extras.memoryMethod &&
+              !extras.sentences.length &&
+              currentWord.note ? (
+                <View style={styles.bentoSection}>
+                  <SectionBadge
+                    icon="bulb-outline"
+                    label="助记与例句"
+                    color={Colors.textSecondary}
+                  />
+                  <RichText text={currentWord.note} style={styles.textContent} />
                 </View>
               ) : null}
             </View>
@@ -565,6 +760,21 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
           </TouchableOpacity>
         </View>
       </View>
+
+      <ConfirmDialog
+        visible={vipGateMessage !== null}
+        title="需要升级 VIP 会员"
+        message={vipGateMessage || ''}
+        onConfirm={() => {
+          setVipGateMessage(null);
+          // pendingGradeRef 保留，支付成功后返回会自动继续这次操作
+          navigation.navigate('Purchase');
+        }}
+        onCancel={() => {
+          setVipGateMessage(null);
+          pendingGradeRef.current = null;
+        }}
+      />
     </SafeAreaView>
   );
 };
@@ -580,11 +790,12 @@ const styles = StyleSheet.create({
   contentScroll: {
     flex: 1,
   },
+  // 解析内容较多时不能居中，否则顶部会被裁切且无法滚动，改为从顶部排布
   scrollInner: {
     padding: 16,
     paddingBottom: 88,
     flexGrow: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
   },
   cardBox: {
     backgroundColor: Colors.card,
@@ -661,6 +872,12 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     letterSpacing: 0.5,
   },
+  wordPhonetic: {
+    fontSize: 15,
+    color: Colors.textTertiary,
+    textAlign: 'center',
+    marginTop: 6,
+  },
   soundButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -696,39 +913,67 @@ const styles = StyleSheet.create({
   dividerLine: {
     height: 1,
     backgroundColor: Colors.divider,
-    marginBottom: 16,
+    marginBottom: 12,
   },
-  meaningBox: {
-    marginBottom: 16,
+  // 解析分区：白底圆角卡片 + 彩色小标题，参照 ciba-pc 单词研读
+  bentoSection: {
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
   },
-  meaningLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: Colors.textSecondary,
-    marginBottom: 6,
-    textTransform: 'uppercase',
-  },
-  meaningContent: {
-    fontSize: 18,
+  textMeaning: {
+    fontSize: 15,
     fontWeight: '600',
     color: Colors.textPrimary,
-    lineHeight: 26,
-  },
-  noteBox: {
-    backgroundColor: Colors.background,
-    borderRadius: 12,
-    padding: 14,
-  },
-  noteLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: Colors.textSecondary,
-    marginBottom: 6,
-  },
-  noteContent: {
-    fontSize: 14,
-    color: Colors.textPrimary,
     lineHeight: 22,
+  },
+  textContent: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+  },
+  /** <b> 提升为加粗标题行时的强调色 */
+  boldStrong: {
+    color: Colors.textPrimary,
+  },
+  memoryInner: {
+    backgroundColor: Colors.accent + '14',
+    borderWidth: 1,
+    borderColor: Colors.accent + '40',
+    borderRadius: 8,
+    padding: 10,
+  },
+  sentencesList: {
+    gap: 8,
+  },
+  sentenceItem: {
+    padding: 10,
+    backgroundColor: Colors.background,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primary,
+  },
+  enSentence: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+    lineHeight: 19,
+  },
+  cnSentence: {
+    fontSize: 12.5,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+    marginTop: 3,
+  },
+  summaryInner: {
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primary + '33',
+    borderRadius: 8,
+    padding: 10,
   },
   bottomBar: {
     paddingHorizontal: 16,

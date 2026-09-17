@@ -11,14 +11,19 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
+import { useAuth } from '../context/AuthContext';
 import { Word } from '../types';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { pronounceWord } from '../utils/speech';
+import { showToast } from '../utils/toast';
 import { Header } from '../components/Header';
 import { ProgressBar } from '../components/ProgressBar';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { fetchBookmarkedWords, BOOKMARK_PAGE_SIZE } from '../services/bookmarkApi';
 import { AUTH_EXPIRED_RESULT } from '../services/api';
+import { checkVipGate, clearVipGateCache } from '../services/vipGate';
 
 /**
  * 生词本复习页
@@ -47,6 +52,8 @@ function mergeWords(prev: Word[], next: Word[]): Word[] {
 export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route, navigation }) => {
   const params = route.params || {};
   const { state, stats, recordReview } = useProgress();
+  // 会员状态与注册时间都来自用户信息
+  const { user, refreshUserInfo } = useAuth();
 
   /** 列表页带过来的已加载生词（服务端第一页起） */
   const initialWords: Word[] = Array.isArray(params.words) ? params.words : [];
@@ -73,6 +80,10 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   const [boundaryFailed, setBoundaryFailed] = useState(false);
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [learnedInSessionCount, setLearnedInSessionCount] = useState(0);
+  /** 被会员限制拦截下来的评分，开通会员后自动继续 */
+  const pendingGradeRef = useRef<'hard' | 'remembered' | null>(null);
+  /** 需要升级会员时的提示文案（非空即弹窗） */
+  const [vipGateMessage, setVipGateMessage] = useState<string | null>(null);
 
   // 逻辑用的可变引用：避免闭包里拿到过期的 state
   const queueRef = useRef<Word[]>(queue);
@@ -183,6 +194,18 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     setGrading(true);
     setBoundaryFailed(false);
     try {
+      // 非会员达到免费额度时先拦截，引导升级会员后再继续（与背词页同一套规则）
+      const gate = await checkVipGate({
+        userVip: (user as any)?.vip,
+        masteredCount: stats.masteredCount,
+        createDate: (user as any)?.createDate,
+      });
+      if (gate.blocked) {
+        pendingGradeRef.current = grade;
+        setVipGateMessage(gate.message || '升级 VIP 会员后可继续使用');
+        return;
+      }
+
       await recordReview(currentWord.id, grade);
       setLearnedInSessionCount((prev) => prev + 1);
 
@@ -212,6 +235,45 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
       setGrading(false);
     }
   };
+
+  // 供「从会员页返回」时调用最新的 handleGrade
+  const handleGradeRef = useRef(handleGrade);
+  useEffect(() => {
+    handleGradeRef.current = handleGrade;
+  }, [handleGrade]);
+
+  /**
+   * 从会员页返回：先刷新用户信息与会员状态，
+   * 已开通会员就自动继续刚才被拦截的「明天复习 / 已记住」。
+   */
+  useFocusEffect(
+    useCallback(() => {
+      const pending = pendingGradeRef.current;
+      if (!pending) return;
+      (async () => {
+        clearVipGateCache();
+        try {
+          await refreshUserInfo?.();
+        } catch {
+          // 刷新失败不阻断，下面仍会按最新接口结果判断
+        }
+        const gate = await checkVipGate({
+          userVip: (user as any)?.vip,
+          masteredCount: stats.masteredCount,
+          createDate: (user as any)?.createDate,
+        });
+        if (gate.blocked) {
+          // 没开通就丢弃待办：否则每次回到页面都会重复刷新并一直挂着这次操作
+          pendingGradeRef.current = null;
+          return;
+        }
+        pendingGradeRef.current = null;
+        showToast('会员已开通，继续复习');
+        handleGradeRef.current(pending);
+      })();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user, stats.masteredCount])
+  );
 
   /** 拉取失败后重试：如果是因为卡在末尾失败，成功后自动翻到下一页 */
   const handleRetryMore = async () => {
@@ -448,6 +510,21 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
           </TouchableOpacity>
         </View>
       </View>
+
+      <ConfirmDialog
+        visible={vipGateMessage !== null}
+        title="需要升级 VIP 会员"
+        message={vipGateMessage || ''}
+        onConfirm={() => {
+          setVipGateMessage(null);
+          // pendingGradeRef 保留，支付成功后返回会自动继续这次操作
+          navigation.navigate('Purchase');
+        }}
+        onCancel={() => {
+          setVipGateMessage(null);
+          pendingGradeRef.current = null;
+        }}
+      />
     </SafeAreaView>
   );
 };

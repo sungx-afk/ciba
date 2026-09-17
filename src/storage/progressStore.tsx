@@ -4,12 +4,21 @@ import rawWordsData from '../data/words.json';
 import { Word, WordProgress, ProgressState, LearningStats } from '../types';
 import { authService, RemoteUser } from '../services/auth';
 import { packLibrary, RemotePack } from '../services/packLibrary';
-import { addWordToBookmark } from '../services/bookmarkApi';
+import { addWordToBookmark, clearBookmarkPackCache } from '../services/bookmarkApi';
+import { clearVipGateCache } from '../services/vipGate';
 import { useAuth } from '../context/AuthContext';
 
 const STORAGE_KEY = '@ciba_progress_v1';
 const PACK_KEY = '@ciba_current_pack';
 const TOP_PACK_KEY = '@ciba_selected_top_pack';
+
+/**
+ * 按账号隔离本地存储：登录后 key 带上用户 id，未登录用公共（游客）key。
+ * 这样切换账号时，学习进度、打卡天数、每日目标、当前词库都跟着账号走。
+ */
+function scopedKey(base: string, accountId: string): string {
+  return accountId ? `${base}#${accountId}` : base;
+}
 
 const localWords: Word[] =
   Array.isArray((rawWordsData as any)?.words)
@@ -183,7 +192,19 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setUser(auth.user ? (auth.user as unknown as RemoteUser) : null);
   }, [auth.user]);
 
-  // 初始化: 恢复登录态 + 恢复上次词库
+  /** 当前账号 id，空串表示未登录（游客公共作用域） */
+  const accountId = useMemo(() => {
+    const u: any = (auth.user as any) || user || null;
+    const id = u?.id ?? u?.userId ?? u?.uid;
+    return id == null || id === '' ? '' : String(id);
+  }, [auth.user, user]);
+
+  // 本地存储按账号分区：切换账号后各自读各自的数据
+  const progressKey = useMemo(() => scopedKey(STORAGE_KEY, accountId), [accountId]);
+  const packKey = useMemo(() => scopedKey(PACK_KEY, accountId), [accountId]);
+  const topPackKey = useMemo(() => scopedKey(TOP_PACK_KEY, accountId), [accountId]);
+
+  // 初始化: 恢复登录态
   useEffect(() => {
     (async () => {
       try {
@@ -200,30 +221,6 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       } catch (e) {
         console.warn('[ProgressStore] authService.restore failed', e);
       }
-
-      // 恢复上次选择的词库
-      try {
-        const saved = await AsyncStorage.getItem(PACK_KEY);
-        if (saved) {
-          const pack = JSON.parse(saved) as CurrentPack;
-          setCurrentPack(pack);
-          // 异步加载远程词库 (不阻塞本地数据展示)
-          setIsLoadingWords(true);
-          packLibrary
-            .loadWordsFromPack(pack.id)
-            .then((remoteWords) => {
-              if (remoteWords.length > 0) {
-                setWords(remoteWords);
-                setWordSource('remote');
-              }
-            })
-            .catch((e) => console.warn('[ProgressStore] loadWordsFromPack failed', e))
-            .finally(() => setIsLoadingWords(false));
-        }
-      } catch (e) {
-        console.warn('[ProgressStore] restore pack failed', e);
-      }
-
       setIsLoaded(true);
     })().catch((e) => {
       console.error('[ProgressStore] init useEffect failed', e);
@@ -231,18 +228,54 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
   }, []);
 
-  // 加载本地进度
+  /**
+   * 按当前账号恢复本地数据：进度 + 上次选择的词库。
+   * 切换账号 / 登录 / 退出都会重新走一遍，保证「学习统计」跟着账号走。
+   */
   useEffect(() => {
-    async function load() {
+    // 登录态还在异步恢复中，先等它确定是哪个账号，避免用游客数据覆盖一遍再重来
+    if (auth.isLoading) return;
+
+    let cancelled = false;
+
+    // ① 先把上一个账号的内存数据清掉，避免切换瞬间串数据
+    setState(defaultState);
+    setPackMasteredDelta({});
+    setTodayWords([]);
+    setTodayWordsTotal(0);
+    setTodayWordsPackId(null);
+    setPackWords([]);
+    setPackWordsPackId(null);
+    setInstalledPack(null);
+    setWords(localWords);
+    setWordSource('local');
+    setCurrentPack(null);
+    setCurrentTopPackState(null);
+    // 会员额度、生词本默认卡组 id 也是按账号的
+    clearVipGateCache();
+    clearBookmarkPackCache();
+
+    /** 老版本只有一份全局数据：首次读到时迁移到当前账号，之后按账号各自保存 */
+    const readScoped = async (key: string, legacyKey: string) => {
+      const scoped = await AsyncStorage.getItem(key);
+      if (scoped || !accountId || key === legacyKey) return scoped;
+      const legacy = await AsyncStorage.getItem(legacyKey);
+      if (!legacy) return null;
+      await AsyncStorage.setItem(key, legacy);
+      await AsyncStorage.removeItem(legacyKey);
+      return legacy;
+    };
+
+    (async () => {
+      // ② 学习进度（含打卡天数、每日目标、发音设置）
       try {
-        const json = await AsyncStorage.getItem(STORAGE_KEY);
-        const today = getTodayString();
+        const json = await readScoped(progressKey, STORAGE_KEY);
+        if (cancelled) return;
         if (json) {
           const parsed: ProgressState = JSON.parse(json);
-          let todayLearned = parsed.todayLearnedIds || [];
-          if (parsed.lastActiveDate !== today) {
-            todayLearned = [];
-          }
+          const today = getTodayString();
+          const todayLearned =
+            parsed.lastActiveDate === today ? parsed.todayLearnedIds || [] : [];
           setState({
             ...defaultState,
             ...parsed,
@@ -253,15 +286,43 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       } catch (e) {
         console.error('[ProgressStore] Failed to load progress', e);
       }
-    }
-    load().catch((e) => console.error('[ProgressStore] load() unhandled rejection', e));
-  }, []);
 
-  // 持久化进度
+      // ③ 上次选择的词库
+      try {
+        const saved = await readScoped(packKey, PACK_KEY);
+        if (cancelled || !saved) return;
+        const pack = JSON.parse(saved) as CurrentPack;
+        setCurrentPack(pack);
+        // 异步加载远程词库 (不阻塞本地数据展示)
+        setIsLoadingWords(true);
+        try {
+          const remoteWords = await packLibrary.loadWordsFromPack(pack.id);
+          if (cancelled) return;
+          if (remoteWords.length > 0) {
+            setWords(remoteWords);
+            setWordSource('remote');
+          }
+        } catch (e) {
+          console.warn('[ProgressStore] loadWordsFromPack failed', e);
+        } finally {
+          if (!cancelled) setIsLoadingWords(false);
+        }
+      } catch (e) {
+        console.warn('[ProgressStore] restore pack failed', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.isLoading, accountId, progressKey, packKey]);
+
+  // 持久化进度（写到当前账号的分区）
   const saveState = async (newState: ProgressState) => {
     setState(newState);
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newState));
+      await AsyncStorage.setItem(progressKey, JSON.stringify(newState));
     } catch (e) {
       console.error('Failed to save progress', e);
     }
@@ -459,18 +520,21 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, []);
 
   /** 切换当前显示的顶层卡组，并记住它（下次进入优先显示） */
-  const setCurrentTopPack = useCallback(async (pack: RemotePack | null) => {
-    setCurrentTopPackState(pack);
-    try {
-      if (pack) {
-        await AsyncStorage.setItem(TOP_PACK_KEY, JSON.stringify(pack));
-      } else {
-        await AsyncStorage.removeItem(TOP_PACK_KEY);
+  const setCurrentTopPack = useCallback(
+    async (pack: RemotePack | null) => {
+      setCurrentTopPackState(pack);
+      try {
+        if (pack) {
+          await AsyncStorage.setItem(topPackKey, JSON.stringify(pack));
+        } else {
+          await AsyncStorage.removeItem(topPackKey);
+        }
+      } catch (e) {
+        console.warn('[ProgressStore] save current top pack failed', e);
       }
-    } catch (e) {
-      console.warn('[ProgressStore] save current top pack failed', e);
-    }
-  }, []);
+    },
+    [topPackKey]
+  );
 
   /**
    * 仅清除内存中的选中状态，保留「上次记住的卡组」本地记录。
@@ -480,17 +544,26 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setCurrentTopPackState(null);
   }, []);
 
-  /** 读取上次记住的卡组 id + name */
+  /** 读取当前账号上次记住的卡组 id + name */
   const readRememberedTopPack = useCallback(async (): Promise<{ id: number; name: string } | null> => {
     try {
-      const raw = await AsyncStorage.getItem(TOP_PACK_KEY);
+      let raw = await AsyncStorage.getItem(topPackKey);
+      // 老版本只有一份全局记录：迁移到当前账号
+      if (!raw && accountId) {
+        const legacy = await AsyncStorage.getItem(TOP_PACK_KEY);
+        if (legacy) {
+          raw = legacy;
+          await AsyncStorage.setItem(topPackKey, legacy);
+          await AsyncStorage.removeItem(TOP_PACK_KEY);
+        }
+      }
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       return parsed?.id ? { id: Number(parsed.id), name: parsed.name } : null;
     } catch {
       return null;
     }
-  }, []);
+  }, [topPackKey, accountId]);
 
   const exportProgressData = (): string => JSON.stringify(state, null, 2);
 
@@ -508,11 +581,11 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setCurrentPack(cp);
       // 复用首页顶部「我的卡组」的当前卡组状态（内存 + 本地记忆一起更新）
       setCurrentTopPack(pack);
-      await AsyncStorage.setItem(PACK_KEY, JSON.stringify(cp));
+      await AsyncStorage.setItem(packKey, JSON.stringify(cp));
     } finally {
       setIsLoadingWords(false);
     }
-  }, [setCurrentTopPack]);
+  }, [setCurrentTopPack, packKey]);
 
   const revertToLocal = useCallback(() => {
     setWords(localWords);
@@ -523,8 +596,8 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setTodayWords([]);
     setTodayWordsTotal(0);
     setTodayWordsPackId(null);
-    AsyncStorage.removeItem(PACK_KEY);
-  }, [resetCurrentTopPack]);
+    AsyncStorage.removeItem(packKey);
+  }, [resetCurrentTopPack, packKey]);
 
   /**
    * 拉取某个卡组的今日学习单词列表

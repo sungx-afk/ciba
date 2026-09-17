@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ProgressProvider } from './src/storage/progressStore';
 import { AuthProvider } from './src/context/AuthContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
+import { ToastHost } from './src/components/ToastHost';
 import { Colors } from './src/theme/colors';
 import { addBootLog, getBootLogs, subscribeBootLog, LogEntry } from './src/utils/crashGuard';
 
@@ -292,6 +293,7 @@ export default function App() {
             <StatusBar style="dark" />
             <View style={styles.appContainer}>
               <RootNavigator />
+              <ToastHost />
               {SHOW_DIAGNOSTIC ? <DiagnosticBadge /> : null}
             </View>
           </ProgressProvider>

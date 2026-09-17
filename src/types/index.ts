@@ -1,3 +1,8 @@
+export interface WordSentenceItem {
+  english: string;
+  chinese: string;
+}
+
 export interface Word {
   id: number;
   cat: string;
@@ -7,6 +12,16 @@ export interface Word {
   note: string;
   /** 远程卡组 id，用于学习结果上报 */
   packageId?: number;
+  /** 远程卡片学习状态：0 未学 / 1、2、3 学习中 / 4 已记住（已掌握） */
+  type?: number;
+  /** 音标（服务端卡片 note.data.phonetic） */
+  phonetic?: string;
+  /** 词义辨析 / 用法区别（note.data.word_difference） */
+  wordDifference?: string;
+  /** 巧记联想 / 记忆技巧（note.data.memory_method） */
+  memoryMethod?: string;
+  /** 场景例句（note.data.sentences） */
+  sentences?: WordSentenceItem[];
 }
 
 export type WordStatus = 'unlearned' | 'learning' | 'mastered';

@@ -55,6 +55,12 @@ export interface RemoteCard {
 export interface NoteData {
   phonetic?: string;
   translation?: string;
+  /** 词义辨析 / 用法区别 */
+  word_difference?: string;
+  /** 巧记联想 / 记忆技巧 */
+  memory_method?: string;
+  /** 场景例句 */
+  sentences?: { english?: string; chinese?: string }[];
   ph_en_mp3?: string;
   ph_am_mp3?: string;
   [key: string]: any;
@@ -129,12 +135,21 @@ class PackLibrary {
    *  - parentId = 父卡组 id 时返回其下的分类卡组
    */
   async fetchPackList(
-    options: { start?: number; limit?: number; parentId?: number } = {}
+    options: {
+      start?: number;
+      limit?: number;
+      parentId?: number;
+      /** 记住状态过滤: 0 未记住 / 1 进行中 / 2 已记住，数组会展开成 remember_type=0&remember_type=1 */
+      rememberTypes?: number[];
+    } = {}
   ): Promise<PackListResult> {
-    const { start = 0, limit = 50, parentId } = options;
+    const { start = 0, limit = 50, parentId, rememberTypes } = options;
     const query: Record<string, any> = { start, limit };
     if (parentId !== undefined && parentId !== null) {
       query.parentId = parentId;
+    }
+    if (rememberTypes && rememberTypes.length) {
+      query.remember_type = rememberTypes;
     }
     const rsp = await api.get<PackListResponse>('/anki/pack.json', query);
     return { packs: rsp.packs || [], total: rsp.total || 0 };
@@ -154,7 +169,7 @@ class PackLibrary {
   /** 某个父卡组下的分类卡组 (parentId = 父卡组 id) */
   async fetchSubPacks(
     parentId: number,
-    options: { start?: number; limit?: number } = {}
+    options: { start?: number; limit?: number; rememberTypes?: number[] } = {}
   ): Promise<PackListResult> {
     return this.fetchPackList({ ...options, parentId });
   }
@@ -270,6 +285,14 @@ class PackLibrary {
     return rsp.pack;
   }
 
+  /**
+   * 删除我的卡组:
+   * POST /anki/pack/{packId}.json  body: _method=DELETE (form-urlencoded)
+   */
+  async deletePack(packId: number): Promise<void> {
+    await api.postForm(`/anki/pack/${packId}.json`, { _method: 'DELETE' });
+  }
+
   /** 上报学习结果 (type: 0=重来 1=困难 2=一般 3=容易 4=已掌握) */
   async markNoteRead(packageId: number, cardId: number, type: number): Promise<void> {
     try {
@@ -350,6 +373,15 @@ class PackLibrary {
       parts.push(extra.join('\n'));
     }
 
+    const sentenceList = Array.isArray(noteData.sentences)
+      ? noteData.sentences
+          .filter((s: any) => s && (s.english || s.chinese))
+          .map((s: any) => ({
+            english: String(s.english || '').trim(),
+            chinese: String(s.chinese || '').trim(),
+          }))
+      : [];
+
     return {
       id: card.id,
       word: note.name || (card as any).name || '',
@@ -358,6 +390,13 @@ class PackLibrary {
       cat,
       sub,
       packageId: card.package_id,
+      // 服务端学习状态：0 未学 / 1、2、3 学习中 / 4 已记住
+      type: typeof card.type === 'number' ? card.type : undefined,
+      // 深度解析字段：背诵页按分区展示（词义辨析 / 巧记联想 / 场景例句）
+      phonetic: String(noteData.phonetic || '').trim(),
+      wordDifference: String((noteData as any).word_difference || '').trim(),
+      memoryMethod: String((noteData as any).memory_method || '').trim(),
+      sentences: sentenceList,
     };
   }
 

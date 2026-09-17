@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -13,23 +14,32 @@ import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
 import { packLibrary, RemotePack } from '../services/packLibrary';
 import { Colors } from '../theme/colors';
+import { showToast } from '../utils/toast';
 import { Header } from '../components/Header';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 interface BookSelectScreenProps {
   navigation: any;
 }
 
 export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }) => {
-  const { isLoggedIn, loadPackWords, currentPack, currentTopPack, revertToLocal } = useProgress();
+  const {
+    isLoggedIn,
+    loadPackWords,
+    currentPack,
+    currentTopPack,
+    revertToLocal,
+    resetCurrentTopPack,
+    setCurrentTopPack,
+  } = useProgress();
   const [packs, setPacks] = useState<RemotePack[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingPackId, setLoadingPackId] = useState<number | null>(null);
+  const [deletingPackId, setDeletingPackId] = useState<number | null>(null);
+  /** 待确认删除的卡组（ConfirmDialog 用） */
+  const [pendingDelete, setPendingDelete] = useState<RemotePack | null>(null);
 
-  useEffect(() => {
-    loadPacks();
-  }, []);
-
-  const loadPacks = async () => {
+  const loadPacks = useCallback(async () => {
     setLoading(true);
     try {
       // 与首页顶部「我的卡组」下拉同一份数据: GET /anki/pack.json (parentId = 0)
@@ -40,7 +50,14 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  // 每次进入本页都重新拉取：从卡组市场添加成功后返回，列表能立刻拿到新卡组
+  useFocusEffect(
+    useCallback(() => {
+      loadPacks();
+    }, [loadPacks])
+  );
 
   const handleSelectPack = async (pack: RemotePack) => {
     if (!isLoggedIn) {
@@ -61,6 +78,68 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
     } finally {
       setLoadingPackId(null);
     }
+  };
+
+  const confirmDelete = async (pack: RemotePack) => {
+    setDeletingPackId(pack.id);
+    try {
+      await packLibrary.deletePack(pack.id);
+
+      const rest = packs.filter((p) => Number(p.id) !== Number(pack.id));
+      setPacks(rest);
+
+      const isCurrent =
+        Number(currentTopPack?.id) === Number(pack.id) ||
+        Number(currentPack?.id) === Number(pack.id);
+
+      // 删的不是当前在用的卡组，列表移除即可
+      if (!isCurrent) {
+        showToast('已删除卡组');
+        return;
+      }
+
+      // 删掉的是当前卡组：先清掉旧焦点，再把焦点交给列表第一个
+      resetCurrentTopPack();
+      const next = rest[0];
+
+      if (!next) {
+        // 全删没了：引导去卡组市场重新添加
+        showToast('已删除卡组');
+        Alert.alert('卡组已清空', '当前没有可用卡组，去卡组市场添加新的分类背单词卡组吧', [
+          { text: '稍后再说', style: 'cancel' },
+          {
+            text: '去卡组市场',
+            onPress: () => navigation.navigate('Market', { firstSetup: true }),
+          },
+        ]);
+        return;
+      }
+
+      setDeletingPackId(null);
+      setLoadingPackId(next.id);
+      try {
+        // 先把首页显示的顶层卡组切过去，否则首页没有焦点，子卡组与今日学习都会为空
+        await setCurrentTopPack(next);
+        await loadPackWords(next);
+        showToast(`已删除卡组，已切换到「${next.name}」`);
+      } catch (e: any) {
+        Alert.alert(
+          '切换词库失败',
+          e?.message || `已删除原卡组，切换到「${next.name}」失败，请手动选择`
+        );
+      } finally {
+        setLoadingPackId(null);
+      }
+    } catch (e: any) {
+      Alert.alert('删除失败', e?.message || '请稍后重试');
+    } finally {
+      setDeletingPackId(null);
+    }
+  };
+
+  /** 二次确认：由 ConfirmDialog 弹窗承载 */
+  const handleDeletePack = (pack: RemotePack) => {
+    setPendingDelete(pack);
   };
 
   const handleUseLocal = () => {
@@ -106,49 +185,68 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
                 .some((id) => Number(id) === Number(item.id));
             const isLoadingThis = loadingPackId === item.id;
             return (
-              <TouchableOpacity
-                style={[styles.packCard, isActive && styles.packCardActive]}
-                onPress={() => handleSelectPack(item)}
-                disabled={loadingPackId !== null}
-                activeOpacity={0.7}
-              >
-                <View style={styles.packHeader}>
-                  <Text style={styles.packName} numberOfLines={1}>
-                    {item.name}
-                  </Text>
-                  {isActive && (
-                    <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
-                  )}
-                </View>
-                {item.summary ? (
-                  <Text style={styles.packSummary} numberOfLines={2}>
-                    {item.summary}
-                  </Text>
-                ) : null}
-                <View style={styles.packMeta}>
-                  <View style={styles.metaItem}>
-                    <Ionicons name="documents-outline" size={14} color={Colors.textMuted} />
-                    <Text style={styles.metaText}>
-                      {item.card_count ? `${item.card_count} 词` : '—'}
+              <View style={[styles.packCard, isActive && styles.packCardActive]}>
+                {/* 主体：点击切换词库 */}
+                <TouchableOpacity
+                  style={styles.packMain}
+                  onPress={() => handleSelectPack(item)}
+                  disabled={loadingPackId !== null}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.packHeader}>
+                    <Text style={styles.packName} numberOfLines={1}>
+                      {item.name}
                     </Text>
+                    {isActive ? (
+                      <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+                    ) : null}
                   </View>
-                  {/* {typeof item.price === 'number' && item.price > 0 ? (
-                    <View style={styles.priceTag}>
-                      <Text style={styles.priceText}>¥{item.price}</Text>
+                  {item.summary ? (
+                    <Text style={styles.packSummary} numberOfLines={2}>
+                      {item.summary}
+                    </Text>
+                  ) : null}
+                  <View style={styles.packMeta}>
+                    <View style={styles.metaItem}>
+                      <Ionicons name="documents-outline" size={14} color={Colors.textMuted} />
+                      <Text style={styles.metaText}>
+                        {item.card_count ? `${item.card_count} 词` : '—'}
+                      </Text>
                     </View>
+                    {/* {typeof item.price === 'number' && item.price > 0 ? (
+                      <View style={styles.priceTag}>
+                        <Text style={styles.priceText}>¥{item.price}</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.freeTag}>
+                        <Text style={styles.freeText}>免费</Text>
+                      </View>
+                    )} */}
+                  </View>
+                </TouchableOpacity>
+
+                {/* 删除按钮与主体平级：嵌套在切换按钮里会抢不到点击 */}
+                <TouchableOpacity
+                  style={styles.deleteBtn}
+                  onPress={() => handleDeletePack(item)}
+                  disabled={deletingPackId !== null || loadingPackId !== null}
+                  activeOpacity={0.8}
+                  accessibilityLabel="删除卡组"
+                >
+                  {deletingPackId === item.id ? (
+                    <ActivityIndicator size="small" color={Colors.coral} />
                   ) : (
-                    <View style={styles.freeTag}>
-                      <Text style={styles.freeText}>免费</Text>
-                    </View>
-                  )} */}
-                </View>
-                {isLoadingThis && (
+                    <Ionicons name="trash-outline" size={16} color={Colors.coral} />
+                  )}
+                </TouchableOpacity>
+
+                {isLoadingThis ? (
                   <View style={styles.loadingOverlay}>
                     <ActivityIndicator color={Colors.primary} />
                     <Text style={styles.loadingOverlayText}>加载中...</Text>
                   </View>
-                )}
-              </TouchableOpacity>
+                ) : null}
+              </View>
             );
           }}
           ListEmptyComponent={
@@ -169,6 +267,18 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
           }
         />
       )}
+
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="删除卡组"
+        message={`确定删除「${pendingDelete?.name || ''}」吗？该卡组及其下分类卡组、学习记录会一并删除，且不可恢复。`}
+        onConfirm={() => {
+          const target = pendingDelete;
+          setPendingDelete(null);
+          if (target) confirmDelete(target);
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </SafeAreaView>
   );
 };
@@ -250,6 +360,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
+  },
+  packMain: {
+    paddingRight: 40,
+  },
+  // 与卡片主体平级的删除按钮，绝对定位到卡片右上角
+  deleteBtn: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.coral + '12',
+    borderWidth: 1,
+    borderColor: Colors.coral + '33',
   },
   packName: {
     fontSize: 16,
