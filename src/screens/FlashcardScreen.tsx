@@ -25,7 +25,7 @@ import { Header } from '../components/Header';
 import { ProgressBar } from '../components/ProgressBar';
 import { RichText } from '../components/RichText';
 import { SectionBadge } from '../components/SectionBadge';
-import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { checkVipGate, clearVipGateCache } from '../services/vipGate';
 
 /** 今日学习单词一次拉取的数量（与首页保持一致） */
@@ -240,6 +240,8 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
   const pendingGradeRef = useRef<'hard' | 'remembered' | null>(null);
   /** 需要升级会员时的提示文案（非空即弹窗） */
   const [vipGateMessage, setVipGateMessage] = useState<string | null>(null);
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
 
   const currentWord = studyQueue[currentIndex];
   const progressInfo = currentWord ? state.progressMap[currentWord.id] : undefined;
@@ -288,7 +290,11 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       await toggleBookmark(wordId, wordName);
       if (!wasBookmarked) showToast('已加入生词本');
     } catch (e: any) {
-      Alert.alert('加入生词本失败', e?.message || '请检查网络后重试');
+      setDialog({
+        title: '加入生词本失败',
+        message: e?.message || '请检查网络后重试',
+        showCancel: false,
+      });
     }
   };
 
@@ -334,7 +340,11 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         setSessionCompleted(true);
       }
     } catch (e: any) {
-      Alert.alert('保存失败', e?.message || '学习结果上报失败，请重试');
+      setDialog({
+        title: '保存失败',
+        message: e?.message || '学习结果上报失败，请重试',
+        showCancel: false,
+      });
     } finally {
       setGrading(false);
     }
@@ -425,7 +435,11 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
 
       if (!target) {
         setPackCursor(siblingPacks.length); // 标记已到末尾，按钮转为提示
-        Alert.alert('太棒了', '后面的卡组今日都没有待学习的单词');
+        setDialog({
+          title: '太棒了',
+          message: '后面的卡组今日都没有待学习的单词',
+          showCancel: false,
+        });
         return;
       }
 
@@ -439,7 +453,11 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       setLearnedInSessionCount(0);
       setSessionCompleted(false);
     } catch (e: any) {
-      Alert.alert('加载失败', e?.message || '获取下一个卡组失败');
+      setDialog({
+        title: '加载失败',
+        message: e?.message || '获取下一个卡组失败',
+        showCancel: false,
+      });
     } finally {
       setSwitchingPack(false);
     }
@@ -774,6 +792,17 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
           setVipGateMessage(null);
           pendingGradeRef.current = null;
         }}
+      />
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
       />
     </SafeAreaView>
   );

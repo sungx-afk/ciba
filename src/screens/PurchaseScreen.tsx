@@ -7,11 +7,11 @@ import {
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Header } from '../components/Header';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { Colors } from '../theme/colors';
 import { useAuth } from '../context/AuthContext';
 import { PayApi, VipStatus } from '../services/payApi';
@@ -77,6 +77,13 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
   const [buying, setBuying] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [vip, setVip] = useState<VipStatus | null>(null);
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
+
+  /** 只有一个「确定」的纯提示弹窗 */
+  const showNotice = useCallback((title: string, message: string) => {
+    setDialog({ title, message, showCancel: false });
+  }, []);
 
   // 本次主动购买的 Promise 控制器（结果由原生回调驱动）
   const pendingRef = useRef<{
@@ -256,10 +263,15 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
   }, [refreshVip, loadPlans]);
 
   const promptLogin = (message: string) => {
-    Alert.alert('请先登录', message, [
-      { text: '取消', style: 'cancel' },
-      { text: '去登录', onPress: () => navigation.navigate('Login') },
-    ]);
+    setDialog({
+      title: '请先登录',
+      message,
+      confirmText: '去登录',
+      onConfirm: () => {
+        setDialog(null);
+        navigation.navigate('Login');
+      },
+    });
   };
 
   const handleBuy = async () => {
@@ -268,12 +280,12 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
       return;
     }
     if (!isIapSupported()) {
-      Alert.alert('提示', 'App Store 内购仅支持 iOS 真机');
+      showNotice('提示', 'App Store 内购仅支持 iOS 真机');
       return;
     }
     // 价格展示不出来时不允许发起支付
     if (!priceAvailable) {
-      Alert.alert('提示', '暂时无法获取商品价格，请检查网络后重试');
+      showNotice('提示', '暂时无法获取商品价格，请检查网络后重试');
       return;
     }
     setBuying(true);
@@ -289,19 +301,19 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
       });
       const result = await verifyPurchase(purchase);
       if (result.ok) {
-        Alert.alert(
+        showNotice(
           '开通成功',
           result.endDate
             ? `会员有效期至 ${formatDate(result.endDate)}`
             : '会员权益已开通，感谢你的支持！'
         );
       } else {
-        Alert.alert('开通失败', result.message || '票据校验失败，请点击「恢复购买」重试');
+        showNotice('开通失败', result.message || '票据校验失败，请点击「恢复购买」重试');
       }
     } catch (e: any) {
       // 用户主动取消不打扰
       if (e?.userCancelled || isUserCancelled(e)) return;
-      Alert.alert('购买未完成', e?.message || '请稍后重试');
+      showNotice('购买未完成', e?.message || '请稍后重试');
     } finally {
       setBuying(false);
     }
@@ -313,7 +325,7 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
       return;
     }
     if (!isIapSupported()) {
-      Alert.alert('提示', 'App Store 内购仅支持 iOS 真机');
+      showNotice('提示', 'App Store 内购仅支持 iOS 真机');
       return;
     }
     setRestoring(true);
@@ -321,7 +333,7 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
       await initIap();
       const purchases = await fetchRestoreablePurchases();
       if (!purchases.length) {
-        Alert.alert('没有可恢复的订单', '当前 Apple ID 下未查询到已购买的会员订单');
+        showNotice('没有可恢复的订单', '当前 Apple ID 下未查询到已购买的会员订单');
         return;
       }
       // 取最近的一笔去服务端校验
@@ -330,17 +342,17 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
       );
       const result = await verifyPurchase(sorted[0], true);
       if (result.ok) {
-        Alert.alert(
+        showNotice(
           '恢复成功',
           result.endDate
             ? `会员有效期至 ${formatDate(result.endDate)}`
             : '会员权益已恢复到当前账号'
         );
       } else {
-        Alert.alert('恢复失败', result.message || '未能恢复购买，请检查网络或 Apple ID');
+        showNotice('恢复失败', result.message || '未能恢复购买，请检查网络或 Apple ID');
       }
     } catch (e: any) {
-      Alert.alert('恢复失败', e?.message || '未能恢复购买，请检查网络或 Apple ID');
+      showNotice('恢复失败', e?.message || '未能恢复购买，请检查网络或 Apple ID');
     } finally {
       setRestoring(false);
     }
@@ -349,7 +361,7 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
   const openManageSubscription = async () => {
     const opened = await openManageSubscriptions();
     if (!opened) {
-      Alert.alert('提示', '无法打开订阅管理页，可在 App Store → 账户 → 订阅中管理');
+      showNotice('提示', '无法打开订阅管理页，可在 App Store → 账户 → 订阅中管理');
     }
   };
 
@@ -556,6 +568,17 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
+      />
     </SafeAreaView>
   );
 };

@@ -12,9 +12,9 @@ import {
   Image,
   ActivityIndicator,
   RefreshControl,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { useFocusEffect } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
 import { useAuth } from '../context/AuthContext';
@@ -82,6 +82,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     setInstalledPack,
     packMasteredDelta,
     resetPackMasteredDelta,
+    dropPackMasteredDelta,
     currentTopPack,
     setCurrentTopPack,
     resetCurrentTopPack,
@@ -171,6 +172,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     };
   }, [selectedTop, activeSub, subPacks.length]);
 
+  // 「未记住」分类卡组的镜像：刷新后要拿它和服务端新数据比对，判断本地增量是否被消化
+  const learningPacksRef = useRef<RemotePack[]>([]);
+  useEffect(() => {
+    learningPacksRef.current = learningPacks;
+  }, [learningPacks]);
+
+  // 「已掌握数量」本地增量的镜像：loadSubPacks 要读到最新值，又不想让它成为 useCallback 的依赖
+  const masteredDeltaRef = useRef(packMasteredDelta);
+  useEffect(() => {
+    masteredDeltaRef.current = packMasteredDelta;
+  }, [packMasteredDelta]);
+
+  /** 还没被服务端数据消化的本地增量: packId -> { delta, base: 学习前服务端已掌握数 } */
+  const pendingDeltaRef = useRef<Record<number, { delta: number; base: number }>>({});
+
+  // 当前 tab 的镜像：刷新 tab 数字时避免在闭包里读到旧值
+  const subTabRef = useRef(subTab);
+  useEffect(() => {
+    subTabRef.current = subTab;
+  }, [subTab]);
+
   /** 顶部卡组: 我的卡组 */
   const loadTopPacks = useCallback(async () => {
     setLoadingPacks(true);
@@ -224,6 +246,51 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   ]);
 
   /**
+   * 用服务端最新数据对齐本地「已掌握数量」增量。
+   * 服务端 remembered_card_count 是异步汇总的，刚学完拉到的数据常常还是旧值，
+   * 所以只有「服务端数字已经把本地学习结果算进去」时才丢掉对应卡组的增量，
+   * 否则继续保留本地增量，避免学完之后「已记住 x/y」反而回落。
+   * 每个增量在产生时记下当时的服务端数字做基准，多次刷新也不会把判据算偏。
+   */
+  const reconcileMasteredDelta = useCallback(
+    (fresh: RemotePack[]) => {
+      const deltas = masteredDeltaRef.current;
+      const pending = pendingDeltaRef.current;
+      if (!deltas || !Object.keys(deltas).length) {
+        if (Object.keys(pending).length) pendingDeltaRef.current = {};
+        return;
+      }
+      // 本次刷新前已知的服务端数字（上一次加载的快照）
+      const snapshot = new Map(
+        learningPacksRef.current.map((p) => [Number(p.id), p.remembered_card_count || 0])
+      );
+      const absorbed: number[] = [];
+      for (const pack of fresh) {
+        const id = Number(pack.id);
+        const delta = deltas[id] || 0;
+        if (!delta) {
+          delete pending[id];
+          continue;
+        }
+        const now = pack.remembered_card_count || 0;
+        let entry = pending[id];
+        // 第一次看到该增量（或增量又变了）时才更新基准，保证基准始终是「学习前的值」
+        if (!entry || entry.delta !== delta) {
+          entry = { delta, base: snapshot.get(id) ?? now };
+          pending[id] = entry;
+        }
+        // 服务端已追上本地增量，或该卡组已经全部记住 -> 增量作废，避免叠加重复计算
+        if (now >= entry.base + entry.delta || now >= (pack.card_count || 0)) {
+          absorbed.push(id);
+        }
+      }
+      for (const id of absorbed) delete pending[id];
+      if (absorbed.length) dropPackMasteredDelta(absorbed);
+    },
+    [dropPackMasteredDelta]
+  );
+
+  /**
    * 某个父卡组下的分类卡组
    * silent = true 时不显示 loading（用于从闪卡页返回后的静默刷新）
    */
@@ -244,9 +311,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           rememberTypes,
         });
         if (gen !== subLoadGenRef.current) return;
-        // 重新拉取「未记住」第一页时服务端数据即最新，清空本地「已掌握」增量；
+        // 重新拉取「未记住」第一页后对齐本地「已掌握」增量；
         // 切到「已记住」tab 不能清，否则今日学习里的已掌握数字会回落
-        if (start === 0 && rememberTypes.includes(0)) resetPackMasteredDelta();
+        if (start === 0 && rememberTypes.includes(0)) reconcileMasteredDelta(packs);
         setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
         setSubTotal(total);
         setSubPacksParentId(parentId);
@@ -264,7 +331,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         if (!silent) setLoadingSubs(false);
       }
     },
-    [resetPackMasteredDelta]
+    [reconcileMasteredDelta]
   );
 
   /**
@@ -306,6 +373,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       return null;
     }
   }, []);
+
+  /**
+   * 重新取两个 tab 的数量（「分类卡组」/「已记住」）。
+   * 列表自身的结果只会更新当前 tab 的数字，另一个 tab 必须单独取一次，
+   * 否则学完返回后有卡组整组变成「已记住」时，另一个 tab 的数字会停在旧值。
+   */
+  const refreshTabCounts = useCallback(
+    async (parentId: number) => {
+      const isLearning = subTabRef.current === 'learning';
+      const currentTypes = isLearning ? LEARNING_REMEMBER_TYPES : REMEMBERED_REMEMBER_TYPES;
+      const otherTypes = isLearning ? REMEMBERED_REMEMBER_TYPES : LEARNING_REMEMBER_TYPES;
+      const [currentTotal, otherTotal] = await Promise.all([
+        loadSubPackCount(parentId, currentTypes),
+        loadSubPackCount(parentId, otherTypes),
+      ]);
+      if (currentTotal != null) {
+        if (isLearning) setLearningTotal(currentTotal);
+        else setRememberedTotal(currentTotal);
+      }
+      if (otherTotal != null) {
+        if (isLearning) setRememberedTotal(otherTotal);
+        else setLearningTotal(otherTotal);
+      }
+    },
+    [loadSubPackCount]
+  );
 
   /**
    * 刚安装的卡组: 服务端在后台线程逐个复制子卡组，
@@ -487,6 +580,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     setActiveSub((prev) => (Number(prev?.id) === Number(matched.id) ? prev : matched));
   }, [todayWordsPackId, learningPacks]);
 
+  /**
+   * 列表刷新后把当前选中的分类卡组换成列表里的新对象，
+   * 否则「今日任务 / 今日已学」等数字会一直停留在进入单词列表页之前的旧数据上。
+   */
+  useEffect(() => {
+    if (!activeSub) return;
+    const fresh = learningPacks.find((p) => Number(p.id) === Number(activeSub.id));
+    if (fresh && fresh !== activeSub) setActiveSub(fresh);
+  }, [activeSub, learningPacks]);
+
   // 只有真的切到另一个分类时才收起今日单词展开，避免切 tab 时列表被折叠
   useEffect(() => {
     setShowAllToday(false);
@@ -496,8 +599,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     await loadTopPacks();
     if (selectedTop) {
       await loadSubPacks(selectedTop.id, 0, SUB_PAGE_SIZE, false, currentRememberTypes);
+      refreshTabCounts(selectedTop.id);
     }
-  }, [loadTopPacks, loadSubPacks, selectedTop, currentRememberTypes]);
+  }, [loadTopPacks, loadSubPacks, refreshTabCounts, selectedTop, currentRememberTypes]);
 
   const handleLoadMore = () => {
     if (loadingSubs || loadingPacks || !selectedTop) return;
@@ -529,11 +633,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [installedPack]);
 
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
+
+  /** 只有一个「确定」的纯提示弹窗 */
+  const showNotice = useCallback((title: string, message: string) => {
+    setDialog({ title, message, showCancel: false });
+  }, []);
+
   const promptLogin = () => {
-    Alert.alert('需要登录', '请先登录后再使用在线卡组', [
-      { text: '取消', style: 'cancel' },
-      { text: '去登录', onPress: () => navigation.navigate('Login') },
-    ]);
+    setDialog({
+      title: '需要登录',
+      message: '请先登录后再使用在线卡组',
+      confirmText: '去登录',
+      onConfirm: () => {
+        setDialog(null);
+        navigation.navigate('Login');
+      },
+    });
   };
 
   /** 确保已加载某个分类卡组的今日学习单词 */
@@ -667,6 +784,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       // 保持已加载的分页长度，只静默替换最新数据
       loadSubPacks(top.id, 0, Math.max(SUB_PAGE_SIZE, subPackCount), true, currentRememberTypes);
       refreshSelectedTopStats(top.id);
+      // 学完之后有分类卡组会整组移到另一个 tab，两边 tab 的数字都要重新取
+      refreshTabCounts(top.id);
       if (pack) {
         loadTodayWords(pack.id, {
           start: 0,
@@ -681,6 +800,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       isLoggedIn,
       loadSubPacks,
       refreshSelectedTopStats,
+      refreshTabCounts,
       loadTodayWords,
       loadReviewWords,
       currentRememberTypes,
@@ -700,15 +820,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           sub: pack.name || '',
         });
         if (!list.length) {
-          Alert.alert('提示', '该分类暂无单词');
+          showNotice('提示', '该分类暂无单词');
           return;
         }
         navigation.navigate('WordList', { source: 'pack', title: pack.name });
       } catch (e: any) {
-        Alert.alert('加载失败', e?.message || '获取单词列表失败');
+        showNotice('加载失败', e?.message || '获取单词列表失败');
       }
     },
-    [loadPackWordList, selectedTop?.name, isLoggedIn, navigation]
+    [loadPackWordList, selectedTop?.name, isLoggedIn, navigation, showNotice]
   );
 
   /** 开始背词: 优先用指定分类，其次当前分类，最后取第一个有今日任务的分类 */
@@ -725,13 +845,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         learningPacks.find((p) => (p.today_card_count || 0) > 0) ||
         learningPacks[0];
       if (!target) {
-        Alert.alert('提示', '暂无可学习的分类卡组');
+        showNotice('提示', '暂无可学习的分类卡组');
         return;
       }
       try {
         const list = await ensureTodayWords(target);
         if (!list.length) {
-          Alert.alert('太棒了', '该分类今日没有待学习的单词');
+          showNotice('太棒了', '该分类今日没有待学习的单词');
           return;
         }
         // 把同一父卡组下的「兄弟卡组」一起带过去，学完当前卡组后可继续学下一个
@@ -750,7 +870,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           hasMorePacks: (learningTotal ?? learningPacks.length) > learningPacks.length,
         });
       } catch (e: any) {
-        Alert.alert('加载失败', e?.message || '获取今日学习单词失败');
+        showNotice('加载失败', e?.message || '获取今日学习单词失败');
       }
     },
     [
@@ -768,11 +888,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const handleStartReview = useCallback(() => {
     const pack = activeSub;
     if (!pack) {
-      Alert.alert('提示', '请先点击下方分类卡组');
+      showNotice('提示', '请先点击下方分类卡组');
       return;
     }
     if (!reviewWords.length) {
-      Alert.alert('太棒了', '该分类暂时没有需要复习的单词');
+      showNotice('太棒了', '该分类暂时没有需要复习的单词');
       return;
     }
     const packIndex = learningPacks.findIndex((p) => Number(p.id) === Number(pack.id));
@@ -1301,6 +1421,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         }
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
+      />
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
       />
     </SafeAreaView>
   );

@@ -8,13 +8,13 @@ import {
   SafeAreaView,
   ActivityIndicator,
   RefreshControl,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
 import { WordCard } from '../components/WordCard';
 import { Header } from '../components/Header';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { Colors } from '../theme/colors';
 import { Word, WordProgress } from '../types';
 import { fetchBookmarkedWords, BOOKMARK_PAGE_SIZE } from '../services/bookmarkApi';
@@ -54,6 +54,8 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
   const [errorMsg, setErrorMsg] = useState('');
   const [moreError, setMoreError] = useState('');
   const [needLogin, setNeedLogin] = useState(false);
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
 
   // 防止并发请求 & 记录下一页偏移量
   const loadingRef = useRef(false);
@@ -181,7 +183,11 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
       try {
         await toggleBookmark(item.id, item.word);
       } catch (e: any) {
-        Alert.alert('加入生词本失败', e?.message || '请检查网络后重试');
+        setDialog({
+          title: '加入生词本失败',
+          message: e?.message || '请检查网络后重试',
+          showCancel: false,
+        });
         return;
       }
       if (wasBookmarked) {
@@ -326,6 +332,17 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
           }
         />
       ) : null}
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
+      />
     </SafeAreaView>
   );
 };

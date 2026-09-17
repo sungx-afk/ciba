@@ -1,20 +1,36 @@
 // components/ConfirmDialog.tsx
-import React, { useState } from 'react';
+import React from 'react';
 import { Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Colors } from '../theme/colors';
 
-interface ConfirmDialogProps {
-  visible: boolean;
+/**
+ * 通用弹窗内容：App 内所有二次确认 / 重要提示都走这个组件，不再使用系统 Alert，
+ * 保证各页面的弹窗样式与交互一致。
+ */
+export interface DialogPayload {
   title: string;
   message: string;
-  onConfirm: () => void;
-  onCancel: () => void;
+  /** 「确定」按钮文案，默认「确定」 */
+  confirmText?: string;
+  /** 「取消」按钮文案，默认「取消」 */
+  cancelText?: string;
+  /** false 时只保留「确定」，用作纯提示弹窗，默认 true */
+  showCancel?: boolean;
+  onConfirm?: () => void;
+  onCancel?: () => void;
+}
+
+interface ConfirmDialogProps extends DialogPayload {
+  visible: boolean;
 }
 
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   visible,
   title,
   message,
+  confirmText = '确定',
+  cancelText = '取消',
+  showCancel = true,
   onConfirm,
   onCancel,
 }) => {
@@ -25,11 +41,13 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.message}>{message}</Text>
           <View style={styles.buttonRow}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
-              <Text style={styles.cancelText}>取消</Text>
-            </TouchableOpacity>
+            {showCancel ? (
+              <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
+                <Text style={styles.cancelText}>{cancelText}</Text>
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity style={styles.confirmBtn} onPress={onConfirm}>
-              <Text style={styles.confirmText}>确定</Text>
+              <Text style={styles.confirmText}>{confirmText}</Text>
             </TouchableOpacity>
           </View>
         </View>

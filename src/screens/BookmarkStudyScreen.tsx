@@ -20,7 +20,7 @@ import { pronounceWord } from '../utils/speech';
 import { showToast } from '../utils/toast';
 import { Header } from '../components/Header';
 import { ProgressBar } from '../components/ProgressBar';
-import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { fetchBookmarkedWords, BOOKMARK_PAGE_SIZE } from '../services/bookmarkApi';
 import { AUTH_EXPIRED_RESULT } from '../services/api';
 import { checkVipGate, clearVipGateCache } from '../services/vipGate';
@@ -84,6 +84,8 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   const pendingGradeRef = useRef<'hard' | 'remembered' | null>(null);
   /** 需要升级会员时的提示文案（非空即弹窗） */
   const [vipGateMessage, setVipGateMessage] = useState<string | null>(null);
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
 
   // 逻辑用的可变引用：避免闭包里拿到过期的 state
   const queueRef = useRef<Word[]>(queue);
@@ -230,7 +232,11 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
 
       setSessionCompleted(true);
     } catch (e: any) {
-      Alert.alert('保存失败', e?.message || '学习结果上报失败，请重试');
+      setDialog({
+        title: '保存失败',
+        message: e?.message || '学习结果上报失败，请重试',
+        showCancel: false,
+      });
     } finally {
       setGrading(false);
     }
@@ -524,6 +530,17 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
           setVipGateMessage(null);
           pendingGradeRef.current = null;
         }}
+      />
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
       />
     </SafeAreaView>
   );

@@ -8,7 +8,6 @@ import {
   TouchableOpacity,
   SafeAreaView,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
@@ -16,7 +15,7 @@ import { packLibrary, RemotePack } from '../services/packLibrary';
 import { Colors } from '../theme/colors';
 import { showToast } from '../utils/toast';
 import { Header } from '../components/Header';
-import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 
 interface BookSelectScreenProps {
   navigation: any;
@@ -36,6 +35,8 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
   const [loading, setLoading] = useState(true);
   const [loadingPackId, setLoadingPackId] = useState<number | null>(null);
   const [deletingPackId, setDeletingPackId] = useState<number | null>(null);
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
   /** 待确认删除的卡组（ConfirmDialog 用） */
   const [pendingDelete, setPendingDelete] = useState<RemotePack | null>(null);
 
@@ -46,7 +47,11 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
       const { packs } = await packLibrary.fetchMyPacks({ start: 0, limit: 100 });
       setPacks(packs);
     } catch (e: any) {
-      Alert.alert('加载失败', e?.message || '无法获取我的卡组');
+      setDialog({
+        title: '加载失败',
+        message: e?.message || '无法获取我的卡组',
+        showCancel: false,
+      });
     } finally {
       setLoading(false);
     }
@@ -61,10 +66,15 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
 
   const handleSelectPack = async (pack: RemotePack) => {
     if (!isLoggedIn) {
-      Alert.alert('需要登录', '请先登录后再切换在线词库', [
-        { text: '取消', style: 'cancel' },
-        { text: '去登录', onPress: () => navigation.navigate('Login') },
-      ]);
+      setDialog({
+        title: '需要登录',
+        message: '请先登录后再切换在线词库',
+        confirmText: '去登录',
+        onConfirm: () => {
+          setDialog(null);
+          navigation.navigate('Login');
+        },
+      });
       return;
     }
 
@@ -74,7 +84,11 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
       await loadPackWords(pack);
       navigation.goBack();
     } catch (e: any) {
-      Alert.alert('切换词库失败', e?.message || '请稍后重试');
+      setDialog({
+        title: '切换词库失败',
+        message: e?.message || '请稍后重试',
+        showCancel: false,
+      });
     } finally {
       setLoadingPackId(null);
     }
@@ -105,13 +119,16 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
       if (!next) {
         // 全删没了：引导去卡组市场重新添加
         showToast('已删除卡组');
-        Alert.alert('卡组已清空', '当前没有可用卡组，去卡组市场添加新的分类背单词卡组吧', [
-          { text: '稍后再说', style: 'cancel' },
-          {
-            text: '去卡组市场',
-            onPress: () => navigation.navigate('Market', { firstSetup: true }),
+        setDialog({
+          title: '卡组已清空',
+          message: '当前没有可用卡组，去卡组市场添加新的分类背单词卡组吧',
+          confirmText: '去卡组市场',
+          cancelText: '稍后再说',
+          onConfirm: () => {
+            setDialog(null);
+            navigation.navigate('Market', { firstSetup: true });
           },
-        ]);
+        });
         return;
       }
 
@@ -123,15 +140,20 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
         await loadPackWords(next);
         showToast(`已删除卡组，已切换到「${next.name}」`);
       } catch (e: any) {
-        Alert.alert(
-          '切换词库失败',
-          e?.message || `已删除原卡组，切换到「${next.name}」失败，请手动选择`
-        );
+        setDialog({
+          title: '切换词库失败',
+          message: e?.message || `已删除原卡组，切换到「${next.name}」失败，请手动选择`,
+          showCancel: false,
+        });
       } finally {
         setLoadingPackId(null);
       }
     } catch (e: any) {
-      Alert.alert('删除失败', e?.message || '请稍后重试');
+      setDialog({
+        title: '删除失败',
+        message: e?.message || '请稍后重试',
+        showCancel: false,
+      });
     } finally {
       setDeletingPackId(null);
     }

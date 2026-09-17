@@ -8,14 +8,13 @@ import {
   TouchableOpacity,
   SafeAreaView,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
 import { packLibrary, RemotePack } from '../services/packLibrary';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
-import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 
 interface MarketScreenProps {
   route: any;
@@ -51,6 +50,8 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
   const [selectedPackId, setSelectedPackId] = useState<number | null>(null);
   // 待确认添加的卡组 (不为 null 时显示确认框)
   const [pendingPack, setPendingPack] = useState<RemotePack | null>(null);
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
 
   const loadMarket = useCallback(async () => {
     setLoading(true);
@@ -87,7 +88,11 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
         navigation.goBack();
         return;
       }
-      Alert.alert('提示', '该卡组已添加，可在分类页顶部下拉切换');
+      setDialog({
+        title: '提示',
+        message: '该卡组已添加，可在分类页顶部下拉切换',
+        showCancel: false,
+      });
     },
     [myPacks, setInstalledPack, navigation]
   );
@@ -102,10 +107,15 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
       return;
     }
     if (!isLoggedIn) {
-      Alert.alert('需要登录', '请先登录后再添加卡组', [
-        { text: '取消', style: 'cancel' },
-        { text: '去登录', onPress: () => navigation.navigate('Login') },
-      ]);
+      setDialog({
+        title: '需要登录',
+        message: '请先登录后再添加卡组',
+        confirmText: '去登录',
+        onConfirm: () => {
+          setDialog(null);
+          navigation.navigate('Login');
+        },
+      });
       return;
     }
     if (installingId !== null) return;
@@ -130,10 +140,18 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
       // 通知分类页刷新我的卡组并切换到新安装的卡组
       setInstalledPack(installed || ({ ...pack } as RemotePack));
       navigation.goBack();
-      Alert.alert('添加成功', `「${pack.name}」已添加到我的卡组`);
+      setDialog({
+        title: '添加成功',
+        message: `「${pack.name}」已添加到我的卡组`,
+        showCancel: false,
+      });
     } catch (e: any) {
       setInstallingId(null);
-      Alert.alert('添加失败', e?.message || '安装卡组失败，请稍后重试');
+      setDialog({
+        title: '添加失败',
+        message: e?.message || '安装卡组失败，请稍后重试',
+        showCancel: false,
+      });
     }
   }, [pendingPack, navigation, setInstalledPack]);
 
@@ -254,6 +272,17 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
         message={`确定把「${pendingPack?.name || ''}」添加到我的卡组？`}
         onConfirm={confirmInstall}
         onCancel={() => setPendingPack(null)}
+      />
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
       />
     </SafeAreaView>
   );

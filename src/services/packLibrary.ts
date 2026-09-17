@@ -293,6 +293,9 @@ class PackLibrary {
     await api.postForm(`/anki/pack/${packId}.json`, { _method: 'DELETE' });
   }
 
+  /** 批量上报的单次条数上限，避免请求体过大 */
+  private static readonly BATCH_LOG_CHUNK = 100;
+
   /** 上报学习结果 (type: 0=重来 1=困难 2=一般 3=容易 4=已掌握) */
   async markNoteRead(packageId: number, cardId: number, type: number): Promise<void> {
     try {
@@ -305,6 +308,27 @@ class PackLibrary {
     } catch (e) {
       // 上报失败不阻断本地学习
       console.warn('markNoteRead failed', e);
+    }
+  }
+
+  /**
+   * 批量上报学习结果：
+   * POST /anki/pack/{packageId}/learn/batch-log.json
+   * body (JSON 数组): [{ "cardId": 1001, "type": 4 }, { "cardId": 1002, "type": 4 }]
+   *
+   * 一次标记整列表时会比较多，按 100 条一批发，保证请求体可控。
+   * 与单条上报不同，这里会把失败抛给调用方：批量标记要让用户知道到底有没有成功。
+   */
+  async markNotesRead(
+    packageId: number,
+    items: { cardId: number; type: number }[]
+  ): Promise<void> {
+    if (!items.length) return;
+    for (let i = 0; i < items.length; i += PackLibrary.BATCH_LOG_CHUNK) {
+      await api.post(
+        `/anki/pack/${packageId}/learn/batch-log`,
+        items.slice(i, i + PackLibrary.BATCH_LOG_CHUNK)
+      );
     }
   }
 

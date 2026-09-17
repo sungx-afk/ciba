@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import rawWordsData from '../data/words.json';
-import { Word, WordProgress, ProgressState, LearningStats } from '../types';
+import { Word, WordProgress, WordStatus, ProgressState, LearningStats } from '../types';
 import { authService, RemoteUser } from '../services/auth';
 import { packLibrary, RemotePack } from '../services/packLibrary';
 import { addWordToBookmark, clearBookmarkPackCache } from '../services/bookmarkApi';
@@ -65,6 +65,106 @@ function getTodayString(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
+/** 评分种类：与服务端学习结果 type 一一对应 */
+type ReviewGrade = 'again' | 'hard' | 'good' | 'easy' | 'remembered';
+
+/** 学习结果上报给服务端的 type */
+const GRADE_TYPE: Record<ReviewGrade, number> = {
+  again: 0,
+  hard: 1,
+  good: 2,
+  easy: 3,
+  remembered: 4,
+};
+
+function emptyProgress(wordId: number): WordProgress {
+  return {
+    wordId,
+    status: 'unlearned',
+    interval: 0,
+    nextReviewTime: 0,
+    lastReviewTime: 0,
+    reviewCount: 0,
+    lapseCount: 0,
+    isBookmarked: false,
+  };
+}
+
+/** 打卡天数：当天首次学习时，昨天有学习则 +1，否则重新计数 */
+function nextStreakDays(state: ProgressState, today: string): number {
+  if (state.lastActiveDate === today) return state.streakDays;
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+  if (state.lastActiveDate === yesterdayStr || state.streakDays === 0) {
+    return state.streakDays + 1;
+  }
+  return 1;
+}
+
+/**
+ * 计算一次评分后的新进度，以及掌握状态的变化量：
+ *  +1 新掌握、-1 从掌握退回其它状态、0 无变化。
+ * 单条上报与批量上报共用同一套 SRS 规则。
+ */
+function applyGrade(
+  prog: WordProgress,
+  grade: ReviewGrade,
+  now: number
+): { updatedProg: WordProgress; masteredDelta: number } {
+  let newInterval = 0;
+  let nextReviewTime = 0;
+  let newStatus: WordStatus = prog.status;
+  let lapseInc = 0;
+
+  switch (grade) {
+    case 'again':
+      newInterval = 0;
+      nextReviewTime = now + 10 * 60 * 1000;
+      newStatus = 'learning';
+      lapseInc = 1;
+      break;
+    case 'hard':
+      newInterval = 1;
+      nextReviewTime = now + 24 * 60 * 60 * 1000;
+      newStatus = 'learning';
+      break;
+    case 'good':
+      newInterval = prog.interval > 0 ? Math.round(prog.interval * 1.8) : 3;
+      nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
+      newStatus = newInterval >= 7 ? 'mastered' : 'learning';
+      break;
+    case 'easy':
+      newInterval = prog.interval > 0 ? Math.round(prog.interval * 2.5) : 7;
+      nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
+      newStatus = 'mastered';
+      break;
+    case 'remembered':
+      // 手动标记为「已记住」(上报 type=4)，直接置为已掌握并给一个较长间隔
+      newInterval = prog.interval > 0 ? Math.round(prog.interval * 3) : 14;
+      nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
+      newStatus = 'mastered';
+      break;
+  }
+
+  const wasMastered = prog.status === 'mastered';
+  const isNowMastered = newStatus === 'mastered';
+  const masteredDelta =
+    isNowMastered && !wasMastered ? 1 : !isNowMastered && wasMastered ? -1 : 0;
+
+  const updatedProg: WordProgress = {
+    ...prog,
+    interval: newInterval,
+    nextReviewTime,
+    lastReviewTime: now,
+    reviewCount: prog.reviewCount + 1,
+    lapseCount: prog.lapseCount + lapseInc,
+    status: newStatus,
+  };
+
+  return { updatedProg, masteredDelta };
+}
+
 const defaultState: ProgressState = {
   progressMap: {},
   dailyGoal: 20,
@@ -85,10 +185,12 @@ interface ProgressContextValue {
   // 学习进度
   state: ProgressState;
   stats: LearningStats;
-  recordReview: (
-    wordId: number,
-    grade: 'again' | 'hard' | 'good' | 'easy' | 'remembered'
-  ) => Promise<void>;
+  recordReview: (wordId: number, grade: ReviewGrade) => Promise<void>;
+  /**
+   * 批量记录学习结果（列表页「全部记住」）:
+   * 一次批量上报 + 一次本地状态刷新，失败会抛出异常。
+   */
+  recordReviews: (wordIds: number[], grade: ReviewGrade) => Promise<void>;
   /** 加入/取消生词本；加入会同步到服务端，wordName 传了就不必再去列表里找 */
   toggleBookmark: (wordId: number, wordName?: string) => Promise<void>;
   updateSettings: (newSettings: Partial<Pick<ProgressState, 'dailyGoal' | 'accent' | 'autoPronounce' | 'speechRate'>>) => Promise<void>;
@@ -134,6 +236,11 @@ interface ProgressContextValue {
   // 服务端 remembered_card_count 不会实时变化，用它做本地增量校正
   packMasteredDelta: Record<number, number>;
   resetPackMasteredDelta: () => void;
+  /**
+   * 只清掉指定卡组的增量（服务端数据已把这些变化算进去时使用），
+   * 其余卡组的增量保留，避免服务端异步汇总滞后时数字回落。
+   */
+  dropPackMasteredDelta: (packIds: number[]) => void;
 
   // 当前显示的顶层卡组（分类页顶部切换的那个），其它页面可直接读取
   currentTopPack: RemotePack | null;
@@ -338,93 +445,35 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return p.nextReviewTime > 0 && p.nextReviewTime <= Date.now();
   };
 
-  const recordReview = async (
-    wordId: number,
-    grade: 'again' | 'hard' | 'good' | 'easy' | 'remembered'
-  ) => {
+  /**
+   * 单词所属卡组 id：优先取单词自带的 packageId（服务端 learn-by-menu 返回），
+   * 找不到时退回当前卡组。
+   */
+  const resolvePackId = useCallback(
+    (wordId: number): number | undefined => {
+      const target =
+        words.find((w) => w.id === wordId) ||
+        todayWords.find((w) => w.id === wordId) ||
+        packWords.find((w) => w.id === wordId);
+      const packId = target?.packageId || currentPack?.id;
+      return packId ? Number(packId) : undefined;
+    },
+    [words, todayWords, packWords, currentPack?.id]
+  );
+
+  const recordReview = async (wordId: number, grade: ReviewGrade) => {
     const now = Date.now();
     const today = getTodayString();
-    const currentProg = state.progressMap[wordId] || {
-      wordId,
-      status: 'unlearned' as const,
-      interval: 0,
-      nextReviewTime: 0,
-      lastReviewTime: 0,
-      reviewCount: 0,
-      lapseCount: 0,
-      isBookmarked: false,
-    };
-
-    let newInterval = 0;
-    let nextReviewTime = 0;
-    let newStatus = currentProg.status;
-    let lapseInc = 0;
-
-    switch (grade) {
-      case 'again':
-        newInterval = 0;
-        nextReviewTime = now + 10 * 60 * 1000;
-        newStatus = 'learning';
-        lapseInc = 1;
-        break;
-      case 'hard':
-        newInterval = 1;
-        nextReviewTime = now + 24 * 60 * 60 * 1000;
-        newStatus = 'learning';
-        break;
-      case 'good':
-        newInterval = currentProg.interval > 0 ? Math.round(currentProg.interval * 1.8) : 3;
-        nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
-        newStatus = newInterval >= 7 ? 'mastered' : 'learning';
-        break;
-      case 'easy':
-        newInterval = currentProg.interval > 0 ? Math.round(currentProg.interval * 2.5) : 7;
-        nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
-        newStatus = 'mastered';
-        break;
-      case 'remembered':
-        // 手动标记为「已记住」(上报 type=4)，直接置为已掌握并给一个较长间隔
-        newInterval = currentProg.interval > 0 ? Math.round(currentProg.interval * 3) : 14;
-        nextReviewTime = now + newInterval * 24 * 60 * 60 * 1000;
-        newStatus = 'mastered';
-        break;
-    }
-
-    // 掌握状态变化: 新掌握 +1，从掌握变为其它 -1
-    const wasMastered = currentProg.status === 'mastered';
-    const isNowMastered = newStatus === 'mastered';
-    const masteredDelta =
-      isNowMastered && !wasMastered ? 1 : !isNowMastered && wasMastered ? -1 : 0;
-
-    const updatedProg: WordProgress = {
-      ...currentProg,
-      interval: newInterval,
-      nextReviewTime,
-      lastReviewTime: now,
-      reviewCount: currentProg.reviewCount + 1,
-      lapseCount: currentProg.lapseCount + lapseInc,
-      status: newStatus,
-    };
+    const currentProg = state.progressMap[wordId] || emptyProgress(wordId);
+    const { updatedProg, masteredDelta } = applyGrade(currentProg, grade, now);
 
     const todaySet = new Set(state.todayLearnedIds);
     todaySet.add(wordId);
 
-    let newStreak = state.streakDays;
-    if (state.lastActiveDate !== today) {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
-      if (state.lastActiveDate === yesterdayStr || state.streakDays === 0) {
-        newStreak = state.streakDays + 1;
-      } else {
-        newStreak = 1;
-      }
-    }
-
     const newState: ProgressState = {
       ...state,
       lastActiveDate: today,
-      streakDays: Math.max(1, newStreak),
+      streakDays: Math.max(1, nextStreakDays(state, today)),
       todayLearnedIds: Array.from(todaySet),
       progressMap: {
         ...state.progressMap,
@@ -436,11 +485,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     // 异步上报学习结果到服务端 (type: 0=重来 1=困难 2=一般 3=容易)
     // 优先使用单词所属卡组 id (learn-by-menu 返回的 package_id)
-    const target =
-      words.find((w) => w.id === wordId) ||
-      todayWords.find((w) => w.id === wordId) ||
-      packWords.find((w) => w.id === wordId);
-    const packId = target?.packageId || currentPack?.id;
+    const packId = resolvePackId(wordId);
 
     // 本地累计该卡组「已掌握数量」的变化量，供分类卡组列表等处实时刷新
     if (packId && masteredDelta !== 0) {
@@ -451,8 +496,72 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
 
     if (packId) {
-      const typeMap = { again: 0, hard: 1, good: 2, easy: 3, remembered: 4 };
-      packLibrary.markNoteRead(packId, wordId, typeMap[grade]);
+      packLibrary.markNoteRead(packId, wordId, GRADE_TYPE[grade]);
+    }
+  };
+
+  /**
+   * 批量记录学习结果（如列表页「全部记住」）:
+   *  - 一次请求完成上报：POST /anki/pack/{packageId}/learn/batch-log
+   *    body: [{ cardId, type }, ...]
+   *  - 先上报再落本地状态，上报失败界面不做变化，避免「本地已记住、服务端还没记住」
+   *  - 所有单词共用一份新进度，只做一次 AsyncStorage 写入，界面一次性刷新
+   */
+  const recordReviews = async (wordIds: number[], grade: ReviewGrade) => {
+    const ids = Array.from(new Set(wordIds));
+    if (!ids.length) return;
+
+    const now = Date.now();
+    const today = getTodayString();
+
+    // ① 先算出每个单词的新进度与「卡组掌握数」变化量
+    const progressMap: Record<number, WordProgress> = { ...state.progressMap };
+    const todaySet = new Set(state.todayLearnedIds);
+    /** 卡组 id -> 需要上报的卡片 id */
+    const groups = new Map<number, number[]>();
+    /** 卡组 id -> 掌握数量的变化量 */
+    const deltas = new Map<number, number>();
+
+    for (const wordId of ids) {
+      const currentProg = progressMap[wordId] || emptyProgress(wordId);
+      const { updatedProg, masteredDelta } = applyGrade(currentProg, grade, now);
+      progressMap[wordId] = updatedProg;
+      todaySet.add(wordId);
+
+      const packId = resolvePackId(wordId);
+      if (!packId) continue; // 本地词库没有卡组 id，只更新本地进度
+      const cardIds = groups.get(packId);
+      if (cardIds) cardIds.push(wordId);
+      else groups.set(packId, [wordId]);
+      if (masteredDelta !== 0) deltas.set(packId, (deltas.get(packId) || 0) + masteredDelta);
+    }
+
+    // ② 批量上报；失败直接抛出，由调用方提示用户
+    for (const [packId, cardIds] of groups) {
+      await packLibrary.markNotesRead(
+        packId,
+        cardIds.map((cardId) => ({ cardId, type: GRADE_TYPE[grade] }))
+      );
+    }
+
+    // ③ 上报成功后才落地本地状态
+    const newState: ProgressState = {
+      ...state,
+      lastActiveDate: today,
+      streakDays: Math.max(1, nextStreakDays(state, today)),
+      todayLearnedIds: Array.from(todaySet),
+      progressMap,
+    };
+    await saveState(newState);
+
+    if (deltas.size) {
+      setPackMasteredDelta((prev) => {
+        const next = { ...prev };
+        for (const [packId, delta] of deltas) {
+          next[packId] = (next[packId] || 0) + delta;
+        }
+        return next;
+      });
     }
   };
 
@@ -517,6 +626,22 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   /** 重新从服务端拉取卡组后调用：服务端数据即最新，清空本地增量避免重复累计 */
   const resetPackMasteredDelta = useCallback(() => {
     setPackMasteredDelta({});
+  }, []);
+
+  /** 只丢弃指定卡组的「已掌握」增量：这些卡组的服务端数字已经包含本地学习结果 */
+  const dropPackMasteredDelta = useCallback((packIds: number[]) => {
+    if (!packIds.length) return;
+    setPackMasteredDelta((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const id of packIds) {
+        if (next[id] !== undefined) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, []);
 
   /** 切换当前显示的顶层卡组，并记住它（下次进入优先显示） */
@@ -724,6 +849,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     state,
     stats,
     recordReview,
+    recordReviews,
     toggleBookmark,
     updateSettings,
     resetProgress,
@@ -751,6 +877,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setInstalledPack,
     packMasteredDelta,
     resetPackMasteredDelta,
+    dropPackMasteredDelta,
     currentTopPack,
     setCurrentTopPack,
     resetCurrentTopPack,

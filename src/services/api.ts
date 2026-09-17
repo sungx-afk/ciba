@@ -53,44 +53,67 @@ export async function setToken(token: string | null) {
   }
 }
 
-/** 规范化路径：确保以 / 开头，且以 .json 结尾 */
-function normalizePath(path: string): string {
+/**
+ * 拆分路径与自带 query，并补齐 .json 后缀。
+ *
+ * ⚠️ 必须先把 `?` 后面的内容摘走，否则拼出来的 URL 会出现两个 `?`
+ * （如 `/anki/pack/1.json?foo=bar?plat=ios`），后端会把整串当成 path 解析，
+ * 既丢参数又和 add packId 这类路径对不上。
+ */
+function normalizePath(path: string): { path: string; query: string } {
   let p = path.startsWith('/') ? path : `/${path}`;
-  if (!p.includes('.json')) {
-    const qIdx = p.indexOf('?');
-    if (qIdx >= 0) {
-      p = `${p.slice(0, qIdx)}.json${p.slice(qIdx)}`;
-    } else {
-      p = `${p}.json`;
-    }
+  let q = '';
+  const qIdx = p.indexOf('?');
+  if (qIdx >= 0) {
+    q = p.slice(qIdx + 1);
+    p = p.slice(0, qIdx);
   }
-  return p;
+  if (!p.endsWith('.json')) {
+    p = `${p}.json`;
+  }
+  return { path: p, query: q };
 }
 
 export function buildUrl(path: string, query?: Record<string, any>): string {
-  const normPath = normalizePath(path);
-  const pairs: string[] = [
-    `${encodeURIComponent('plat')}=${encodeURIComponent(PLAT)}`,
-    `${encodeURIComponent('app_id')}=${encodeURIComponent(APP_ID)}`,
-    `${encodeURIComponent('build')}=${encodeURIComponent(BUILD)}`,
-  ];
-  if (tokenCache) pairs.push(`token=${encodeURIComponent(tokenCache)}`);
+  const { path: normPath, query: pathQuery } = normalizePath(path);
+
+  /** 同名参数保留多个值（后端需要 type=0&type=1&type=4），按出现顺序拼 */
+  const pairs: Array<[string, string]> = [];
+  const append = (key: string, value: any) => {
+    if (value === undefined || value === null || value === '') return;
+    if (Array.isArray(value)) {
+      for (const item of value) append(key, item);
+      return;
+    }
+    pairs.push([encodeURIComponent(key), encodeURIComponent(String(value))]);
+  };
+  const has = (key: string) => pairs.some(([k]) => k === key);
+
+  // ① 路径自带 query（登录态经常这么透传），保持原顺序
+  for (const seg of pathQuery.split('&')) {
+    if (!seg) continue;
+    const eq = seg.indexOf('=');
+    if (eq < 0) continue;
+    append(decodeURIComponent(seg.slice(0, eq)), decodeURIComponent(seg.slice(eq + 1)));
+  }
+
+  // ② 全局参数：plat/app_id/build/token 每个只允许出现一次，
+  //    路径里已经带过就不再补，避免拼出 token=xxx&...&token=xxx
+  if (!has('plat')) append('plat', PLAT);
+  if (!has('app_id')) append('app_id', APP_ID);
+  if (!has('build')) append('build', BUILD);
+  if (tokenCache && !has('token')) append('token', tokenCache);
+
+  // ③ 调用方 query：同样不允许覆盖上面四个全局参数
   if (query) {
     for (const [k, v] of Object.entries(query)) {
-      if (v === undefined || v === null || v === '') continue;
-      const key = encodeURIComponent(k);
-      // 数组参数需要展开成重复 key，例如 type=0&type=1&type=4
-      if (Array.isArray(v)) {
-        for (const item of v) {
-          if (item === undefined || item === null || item === '') continue;
-          pairs.push(`${key}=${encodeURIComponent(String(item))}`);
-        }
-      } else {
-        pairs.push(`${key}=${encodeURIComponent(String(v))}`);
-      }
+      if ((k === 'token' || k === 'plat' || k === 'app_id' || k === 'build') && has(k)) continue;
+      append(k, v);
     }
   }
-  return `${BASE_URL}${normPath}?${pairs.join('&')}`;
+
+  const qs = pairs.map(([k, v]) => `${k}=${v}`).join('&');
+  return `${BASE_URL}${normPath}${qs ? `?${qs}` : ''}`;
 }
 
 function buildFormBody(form?: Record<string, any>): string {
@@ -109,13 +132,16 @@ export interface Envelope<T = any> {
   [key: string]: any;
 }
 
+/** JSON 请求体：对象或数组（批量接口如 learn/batch-log 直接传数组） */
+export type RequestBody = Record<string, any> | Array<Record<string, any>>;
+
 /** 通用底层请求方法 */
 async function request<T = any>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   options?: {
     query?: Record<string, any>;
-    body?: Record<string, any>;
+    body?: RequestBody;
     encoding?: 'json' | 'form';
   }
 ): Promise<T> {
@@ -131,7 +157,7 @@ async function request<T = any>(
   if (method !== 'GET' && options?.body !== undefined) {
     if (options.encoding === 'form') {
       headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
-      body = buildFormBody(options.body);
+      body = buildFormBody(options.body as Record<string, any>);
     } else {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(options.body);
@@ -162,9 +188,9 @@ async function request<T = any>(
 export const api = {
   get: <T = any>(path: string, query?: Record<string, any>) =>
     request<T>('GET', path, { query }),
-  post: <T = any>(path: string, body?: Record<string, any>) =>
+  post: <T = any>(path: string, body?: RequestBody) =>
     request<T>('POST', path, { body, encoding: 'json' }),
-  patch: <T = any>(path: string, body?: Record<string, any>) =>
+  patch: <T = any>(path: string, body?: RequestBody) =>
     request<T>('PATCH', path, { body, encoding: 'json' }),
   postForm: <T = any>(path: string, body?: Record<string, any>) =>
     request<T>('POST', path, { body, encoding: 'form' }),

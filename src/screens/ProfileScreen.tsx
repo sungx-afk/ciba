@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
 import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
-import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 
 interface ProfileScreenProps {
@@ -29,6 +29,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const isLoggedIn = authLoggedIn || progressLoggedIn;
 
   const [logoutVisible, setLogoutVisible] = useState(false);
+  /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
 
   // 当前使用的词库: 与首页顶部「我的卡组」共用同一份 currentTopPack
   const [rememberedPackName, setRememberedPackName] = useState<string | null>(null);
@@ -79,18 +81,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   };
 
   const handleReset = () => {
-    Alert.alert(
-      '清空学习记录',
-      '确定要清除所有词汇的学习进度与生词本记录吗？此操作不可恢复。',
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '确定清空',
-          style: 'destructive',
-          onPress: () => resetProgress(),
-        },
-      ]
-    );
+    setDialog({
+      title: '清空学习记录',
+      message: '确定要清除所有词汇的学习进度与生词本记录吗？此操作不可恢复。',
+      confirmText: '确定清空',
+      onConfirm: () => {
+        setDialog(null);
+        resetProgress();
+      },
+    });
   };
 
   const handleLogout = () => {
@@ -295,6 +294,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         message="确定要退出登录吗？"
         onConfirm={confirmLogout}
         onCancel={() => setLogoutVisible(false)}
+      />
+
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
       />
     </SafeAreaView>
   );

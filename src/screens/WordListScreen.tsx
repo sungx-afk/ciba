@@ -8,7 +8,6 @@ import {
   TouchableOpacity,
   SafeAreaView,
   ScrollView,
-  Alert,
   Animated,
   Easing,
   LayoutAnimation,
@@ -25,12 +24,12 @@ import { Word } from '../types';
 import { Header } from '../components/Header';
 import { RichText } from '../components/RichText';
 import { SectionBadge } from '../components/SectionBadge';
-import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { pronounceWord } from '../utils/speech';
 import { showToast } from '../utils/toast';
 import { playRememberedSound } from '../utils/effectSound';
 import { packLibrary } from '../services/packLibrary';
-import { checkVipGate, clearVipGateCache } from '../services/vipGate';
+import { checkVipGate, clearVipGateCache, FREE_MASTERED_LIMIT, VipGateResult } from '../services/vipGate';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -92,7 +91,32 @@ function extractPhonetic(note: string): string {
   return '';
 }
 
-/** 去掉音标行后的助记/例句 */
+/**
+ * 去掉例句部分：
+ *  - 本地词库的「【例】...」行
+ *  - 远程卡组的「例句:」标题行及其后的「• ...」条目行
+ * 单词列表只留助记与辨析，例句在背诵页看。
+ */
+function noteWithoutSentences(note: string): string {
+  if (!note) return '';
+  const kept: string[] = [];
+  let inSentences = false;
+  for (const line of note.split('\n')) {
+    const trimmed = line.trim();
+    if (/^(【例】|例句\s*[:：])/.test(trimmed)) {
+      inSentences = true;
+      continue;
+    }
+    if (inSentences) {
+      if (/^[•·]/.test(trimmed)) continue;
+      inSentences = false;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n').trim();
+}
+
+/** 去掉音标行后的助记/辨析 */
 function noteWithoutPhonetic(note: string, phonetic: string): string {
   if (!note) return '';
   const flat = note.replace(/\n/g, ' ').trim();
@@ -211,7 +235,10 @@ const WordRow: React.FC<WordRowProps> = ({
   const [bookmarking, setBookmarking] = useState(false);
 
   const phonetic = useMemo(() => extractPhonetic(word.note), [word.note]);
-  const noteBody = useMemo(() => noteWithoutPhonetic(word.note, phonetic), [word.note, phonetic]);
+  const noteBody = useMemo(
+    () => noteWithoutPhonetic(noteWithoutSentences(word.note), phonetic),
+    [word.note, phonetic]
+  );
 
   const isMeaningMode = mode === 'meaning';
   const titleText = isMeaningMode ? word.meaning || word.word : word.word;
@@ -278,6 +305,11 @@ const WordRow: React.FC<WordRowProps> = ({
             <Text style={[styles.cardTitle, isMeaningMode && styles.cardTitleCn]} numberOfLines={2}>
               {titleText}
             </Text>
+            {phonetic ? (
+              <Text style={styles.titlePhonetic} numberOfLines={1}>
+                {phonetic}
+              </Text>
+            ) : null}
             <TouchableOpacity
               style={styles.soundBtn}
               onPress={(e) => handlePronounce(e)}
@@ -327,7 +359,6 @@ const WordRow: React.FC<WordRowProps> = ({
             <Text style={styles.detailAnswer} numberOfLines={2}>
               {answerText}
             </Text>
-            {phonetic ? <Text style={styles.detailPhonetic}>{phonetic}</Text> : null}
             {noteBody ? <RichText text={noteBody} style={styles.detailNote} /> : null}
           </View>
         ) : null}
@@ -342,6 +373,7 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     state,
     stats,
     recordReview,
+    recordReviews,
     toggleBookmark,
     words,
     todayWords,
@@ -354,10 +386,15 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
 
   const [viewMode, setViewMode] = useState<ViewMode>('word');
   const [showDetail, setShowDetail] = useState(false);
-  const [markAll, setMarkAll] = useState({ running: false, done: 0, total: 0 });
+  /** 「全部记住」进行中：批量请求只有一个来回，这里只记录进行中与总数 */
+  const [markAll, setMarkAll] = useState({ running: false, total: 0 });
   const [flying, setFlying] = useState<FlyItem[]>([]);
+  /**
+   * 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert。
+   * 见 components/ConfirmDialog.tsx
+   */
+  const [dialog, setDialog] = useState<DialogPayload | null>(null);
   /** 被会员限制拦截下来的「标记记住」，开通会员后自动继续 */
-  const [vipGateMessage, setVipGateMessage] = useState<string | null>(null);
   const pendingMarkRef = useRef<PendingMark | null>(null);
 
   const rootRef = useRef<any>(null);
@@ -449,7 +486,7 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     (startWordId?: number) => {
       const ids = studyWords.map((w) => w.id);
       if (!ids.length) {
-        Alert.alert('提示', '当前列表没有单词');
+        setDialog({ title: '提示', message: '当前列表没有单词', showCancel: false });
         return;
       }
       const packId =
@@ -464,25 +501,52 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     [studyWords, source, todayWordsPackId, packWordsPackId, title, navigation]
   );
 
+  /** 会员限制的升级弹窗：一律走 ConfirmDialog */
+  const showVipDialog = useCallback(
+    (message: string) => {
+      setDialog({
+        title: '需要升级 VIP 会员',
+        message,
+        confirmText: '去开通',
+        onConfirm: () => {
+          setDialog(null);
+          // pendingMarkRef 保留，支付成功后返回会自动继续这次标记
+          navigation.navigate('Purchase');
+        },
+        onCancel: () => {
+          setDialog(null);
+          pendingMarkRef.current = null;
+        },
+      });
+    },
+    [navigation]
+  );
+
   /**
    * 非会员免费额度校验（与背词页「明天复习 / 已记住」同一套规则）。
-   * - extraMastered：批量操作中已标记成功、还没反映到 stats 上的数量
    * - silent：只返回结果、不弹升级弹窗（「从会员页返回」的自动继续判断用）
-   * 返回 true 表示被拦截，调用方应中止并把操作存进 pendingMarkRef。
+   * 返回值：null 表示放行；否则为被限制的结果（含 reason/message），
+   * 调用方通常应中止并把操作存进 pendingMarkRef。
    */
   const runVipGate = useCallback(
-    async (options?: { extraMastered?: number; silent?: boolean }): Promise<boolean> => {
-      const { extraMastered = 0, silent = false } = options || {};
-      const gate = await checkVipGate({
-        userVip: (user as any)?.vip,
-        masteredCount: stats.masteredCount + extraMastered,
-        createDate: (user as any)?.createDate,
-      });
-      if (!gate.blocked) return false;
-      if (!silent) setVipGateMessage(gate.message || '升级 VIP 会员后可继续使用');
-      return true;
+    async (options?: { silent?: boolean }): Promise<VipGateResult | null> => {
+      const { silent = false } = options || {};
+      // 会员状态请求失败时不拦截操作，也不把异常抛给调用方
+      let gate: VipGateResult;
+      try {
+        gate = await checkVipGate({
+          userVip: (user as any)?.vip,
+          masteredCount: stats.masteredCount,
+          createDate: (user as any)?.createDate,
+        });
+      } catch {
+        return null;
+      }
+      if (!gate.blocked) return null;
+      if (!silent) showVipDialog(gate.message || '升级 VIP 会员后可继续使用');
+      return gate;
     },
-    [user, stats.masteredCount]
+    [user, stats.masteredCount, showVipDialog]
   );
 
   /**
@@ -544,7 +608,11 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     } catch (e: any) {
       // 上报失败：撤掉飞行中的标签
       setFlying((prev) => prev.filter((f) => f.id !== word.id));
-      Alert.alert('保存失败', e?.message || '标记已记住失败，请重试');
+      setDialog({
+        title: '保存失败',
+        message: e?.message || '标记已记住失败，请重试',
+        showCancel: false,
+      });
       throw e;
     }
   };
@@ -556,58 +624,84 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
       await toggleBookmark(wordId, wordName);
       if (!wasBookmarked) showToast('已加入生词本');
     } catch (e: any) {
-      Alert.alert('加入生词本失败', e?.message || '请检查网络后重试');
+      setDialog({
+        title: '加入生词本失败',
+        message: e?.message || '请检查网络后重试',
+        showCancel: false,
+      });
     }
   };
 
-  /** 全部记住：按列表顺序串行上报，失败即中断；途中命中免费额度上限会提示升级会员 */
+  /** 全部记住：一次批量请求标记整列表，成功后统一刷新界面 */
   const runMarkAll = async (targets: Word[]) => {
-    setMarkAll({ running: true, done: 0, total: targets.length });
-    let done = 0;
-    for (const w of targets) {
-      // 每标记一个都会增加已记住数量，逐个校验，超出免费额度时保留剩余待办
-      if (await runVipGate({ extraMastered: done })) {
-        pendingMarkRef.current = { type: 'all', words: targets.slice(done) };
-        setMarkAll({ running: false, done, total: targets.length });
-        return;
-      }
-      try {
-        await recordReview(w.id, 'remembered');
-        done += 1;
-        setMarkAll({ running: true, done, total: targets.length });
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      } catch (e: any) {
-        setMarkAll({ running: false, done, total: targets.length });
-        Alert.alert(
-          '已中断',
-          `已完成 ${done} 个，第 ${done + 1} 个标记失败：${e?.message || '请检查网络后重试'}`
-        );
-        return;
-      }
+    if (!targets.length) return;
+
+    // 免费额度只够标记一部分时，先标记够的那部分，剩下的留到开通会员后继续
+    let batch = targets;
+    let rest: Word[] = [];
+    const blocked = await runVipGate({ silent: true });
+    if (blocked) {
+      const remaining =
+        blocked.reason === 'mastered'
+          ? Math.max(0, FREE_MASTERED_LIMIT - stats.masteredCount)
+          : 0;
+      batch = targets.slice(0, remaining);
+      rest = targets.slice(remaining);
     }
-    setMarkAll({ running: false, done, total: targets.length });
-    Alert.alert('太棒了', `已把 ${done} 个单词标记为已记住`);
+
+    if (!batch.length) {
+      // 一个都标记不了：提示升级会员，剩下的等开通后自动继续
+      pendingMarkRef.current = { type: 'all', words: rest.length ? rest : targets };
+      await runVipGate();
+      return;
+    }
+
+    setMarkAll({ running: true, total: batch.length });
+
+    try {
+      await recordReviews(
+        batch.map((w) => w.id),
+        'remembered'
+      );
+      // 单词一次性移到底部「已记住」区域时的布局动画
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setMarkAll({ running: false, total: 0 });
+      showToast(`已把 ${batch.length} 个单词标记为已记住`);
+    } catch (e: any) {
+      setMarkAll({ running: false, total: 0 });
+      setDialog({
+        title: '标记失败',
+        message: e?.message || '批量标记已记住失败，请检查网络后重试',
+        showCancel: false,
+      });
+    }
+
+    if (rest.length) {
+      // 免费额度用完了：剩下这些等会员开通后接着标记
+      pendingMarkRef.current = { type: 'all', words: rest };
+      await runVipGate();
+    }
   };
 
-  const handleMarkAll = async () => {
+  /** 点击「全部记住」：先用 ConfirmDialog 二次确认，确认后再发起批量请求 */
+  const handleMarkAll = () => {
     if (markAll.running) return;
     if (!pendingWords.length) {
-      Alert.alert('提示', '当前列表没有未记住的单词');
+      setDialog({
+        title: '提示',
+        message: '当前列表没有未记住的单词',
+        showCancel: false,
+      });
       return;
     }
-    // 非会员达到免费额度时先拦截，避免批量标记绕过限制
-    if (await runVipGate()) {
-      pendingMarkRef.current = { type: 'all', words: pendingWords };
-      return;
-    }
-    Alert.alert(
-      '全部记住',
-      `将把当前列表 ${pendingWords.length} 个未记住的单词标记为已记住，是否继续？`,
-      [
-        { text: '取消', style: 'cancel' },
-        { text: '确定', onPress: () => runMarkAll(pendingWords) },
-      ]
-    );
+    setDialog({
+      title: '全部记住',
+      message: `将把当前列表 ${pendingWords.length} 个未记住的单词标记为已记住，是否继续？`,
+      onConfirm: () => {
+        setDialog(null);
+        runMarkAll(pendingWords);
+      },
+    });
   };
 
   // 供「从会员页返回」时调用最新的标记方法
@@ -723,9 +817,7 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
                 {markAll.running ? (
                   <>
                     <ActivityIndicator size="small" color="#FFFFFF" />
-                    <Text style={styles.primaryBtnText}>
-                      标记中 {markAll.done}/{markAll.total}
-                    </Text>
+                    <Text style={styles.primaryBtnText}>标记中 {markAll.total} 词</Text>
                   </>
                 ) : (
                   <Text style={styles.primaryBtnText}>全部记住</Text>
@@ -842,18 +934,14 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
       </View>
 
       <ConfirmDialog
-        visible={vipGateMessage !== null}
-        title="需要升级 VIP 会员"
-        message={vipGateMessage || ''}
-        onConfirm={() => {
-          setVipGateMessage(null);
-          // pendingMarkRef 保留，支付成功后返回会自动继续这次标记
-          navigation.navigate('Purchase');
-        }}
-        onCancel={() => {
-          setVipGateMessage(null);
-          pendingMarkRef.current = null;
-        }}
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
       />
     </SafeAreaView>
   );
@@ -995,6 +1083,12 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 24,
   },
+  titlePhonetic: {
+    flexShrink: 1,
+    marginLeft: 8,
+    fontSize: 13,
+    color: Colors.primary,
+  },
   soundBtn: {
     marginLeft: 8,
     padding: 4,
@@ -1035,11 +1129,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.textPrimary,
     lineHeight: 22,
-  },
-  detailPhonetic: {
-    marginTop: 4,
-    fontSize: 13,
-    color: Colors.primary,
   },
   detailNote: {
     marginTop: 4,
