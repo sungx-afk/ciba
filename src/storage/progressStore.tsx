@@ -4,6 +4,7 @@ import rawWordsData from '../data/words.json';
 import { Word, WordProgress, ProgressState, LearningStats } from '../types';
 import { authService, RemoteUser } from '../services/auth';
 import { packLibrary, RemotePack } from '../services/packLibrary';
+import { addWordToBookmark } from '../services/bookmarkApi';
 import { useAuth } from '../context/AuthContext';
 
 const STORAGE_KEY = '@ciba_progress_v1';
@@ -79,7 +80,8 @@ interface ProgressContextValue {
     wordId: number,
     grade: 'again' | 'hard' | 'good' | 'easy' | 'remembered'
   ) => Promise<void>;
-  toggleBookmark: (wordId: number) => Promise<void>;
+  /** 加入/取消生词本；加入会同步到服务端，wordName 传了就不必再去列表里找 */
+  toggleBookmark: (wordId: number, wordName?: string) => Promise<void>;
   updateSettings: (newSettings: Partial<Pick<ProgressState, 'dailyGoal' | 'accent' | 'autoPronounce' | 'speechRate'>>) => Promise<void>;
   resetProgress: () => Promise<void>;
   exportProgressData: () => string;
@@ -393,7 +395,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  const toggleBookmark = async (wordId: number) => {
+  const toggleBookmark = async (wordId: number, wordName?: string) => {
     const currentProg = state.progressMap[wordId] || {
       wordId,
       status: 'unlearned' as const,
@@ -404,6 +406,21 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       lapseCount: 0,
       isBookmarked: false,
     };
+    const nextBookmarked = !currentProg.isBookmarked;
+
+    // 加入生词本：先同步服务端，成功后才落本地，避免本地显示与服务端不一致
+    if (nextBookmarked) {
+      const target =
+        words.find((w) => w.id === wordId) ||
+        todayWords.find((w) => w.id === wordId) ||
+        packWords.find((w) => w.id === wordId);
+      const name = (wordName || target?.word || '').trim();
+      if (!name) {
+        throw new Error('未取到单词，无法加入生词本');
+      }
+      await addWordToBookmark(name);
+    }
+    // 取消收藏：后端没有删除接口，只改本地状态
 
     const newState: ProgressState = {
       ...state,
@@ -411,7 +428,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         ...state.progressMap,
         [wordId]: {
           ...currentProg,
-          isBookmarked: !currentProg.isBookmarked,
+          isBookmarked: nextBookmarked,
         },
       },
     };

@@ -11,6 +11,26 @@ export const BOOKMARK_PAGE_SIZE = 20;
 
 const PACK_FLAG_PATH = '/anki/pack/flag/default_movie_pack';
 const SORTERS = JSON.stringify([{ direction: 'desc', column: 'id' }]);
+const MOVIE_TO_CARD_PATH = '/anki/movie2card';
+
+/**
+ * 把单词加进服务端生词本（默认「电影卡组」）
+ * POST /anki/movie2card.json  wordName=xxx&englishCaption=xxx
+ *
+ * 注意：后端每次调用都会新建一条 note + card，只支持新增、**没有删除接口**，
+ * 所以「取消收藏」不能反过来调它，只能改本地状态。
+ * 非会员卡组满 100 张时后端会抛会员错误，由调用方提示用户。
+ */
+export async function addWordToBookmark(wordName: string, englishCaption?: string): Promise<void> {
+  const name = String(wordName || '').trim();
+  if (!name) {
+    throw new APIError(-1, '单词为空，无法加入生词本');
+  }
+  await api.postForm(MOVIE_TO_CARD_PATH, {
+    wordName: name,
+    englishCaption: (englishCaption || '').trim() || name,
+  });
+}
 
 export interface FetchBookmarkedParams {
   start?: number;

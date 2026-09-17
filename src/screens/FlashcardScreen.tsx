@@ -226,6 +226,15 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
   const progressInfo = currentWord ? state.progressMap[currentWord.id] : undefined;
   const isBookmarked = progressInfo?.isBookmarked || false;
 
+  /** 加入/取消生词本：加入会调服务端 /anki/movie2card，失败时不改本地状态 */
+  const handleToggleBookmark = async (wordId: number, wordName?: string) => {
+    try {
+      await toggleBookmark(wordId, wordName);
+    } catch (e: any) {
+      Alert.alert('加入生词本失败', e?.message || '请检查网络后重试');
+    }
+  };
+
   // 切换到新词时，按设置自动发音
   useEffect(() => {
     if (currentWord && state.autoPronounce && !sessionCompleted) {
@@ -439,7 +448,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         onBack={() => navigation.goBack()}
         rightAction={{
           icon: isBookmarked ? 'bookmark' : 'bookmark-outline',
-          onPress: () => toggleBookmark(currentWord.id),
+          onPress: () => handleToggleBookmark(currentWord.id, currentWord.word),
         }}
       />
 

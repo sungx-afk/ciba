@@ -73,6 +73,15 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     }
   };
 
+  /** 加入/取消生词本：加入会调服务端 /anki/movie2card，失败时不改本地状态 */
+  const handleToggleBookmark = async (wordId: number, wordName?: string) => {
+    try {
+      await toggleBookmark(wordId, wordName);
+    } catch (e: any) {
+      Alert.alert('加入生词本失败', e?.message || '请检查网络后重试');
+    }
+  };
+
   const handleStartStudy = () => {
     if (source === 'today' || source === 'pack') {
       // 带上当前卡组 id，学完后可继续学习下一个子卡组
@@ -137,7 +146,7 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
             word={item}
             progress={state.progressMap[item.id]}
             accent={state.accent}
-            onToggleBookmark={() => toggleBookmark(item.id)}
+            onToggleBookmark={() => handleToggleBookmark(item.id, item.word)}
             onMarkMastered={() => handleMarkMastered(item.id)}
             onPress={() =>
               navigation.navigate('Flashcard', {

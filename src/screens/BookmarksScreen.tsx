@@ -8,6 +8,7 @@ import {
   SafeAreaView,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -170,11 +171,19 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     load('initial');
   }, [load]);
 
-  /** 点击书签：本地立即取消收藏并从列表移除，保持列表与状态一致 */
+  /**
+   * 点击书签：本地取消收藏并从列表移除。
+   * 服务端没有删除接口，取消只改本地；重新收藏会走 /anki/movie2card 再加一条。
+   */
   const handleToggleBookmark = useCallback(
     async (item: Word) => {
       const wasBookmarked = !!state.progressMap[item.id]?.isBookmarked;
-      await toggleBookmark(item.id);
+      try {
+        await toggleBookmark(item.id, item.word);
+      } catch (e: any) {
+        Alert.alert('加入生词本失败', e?.message || '请检查网络后重试');
+        return;
+      }
       if (wasBookmarked) {
         setWords((prev) => prev.filter((w) => w.id !== item.id));
         setTotal((prev) => Math.max(0, prev - 1));
