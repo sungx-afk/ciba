@@ -7,7 +7,6 @@ import {
   SafeAreaView,
   ScrollView,
   StatusBar,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,15 +20,24 @@ import { showToast } from '../utils/toast';
 import { Header } from '../components/Header';
 import { ProgressBar } from '../components/ProgressBar';
 import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
-import { fetchBookmarkedWords, BOOKMARK_PAGE_SIZE } from '../services/bookmarkApi';
+import {
+  fetchBookmarkedWords,
+  BOOKMARK_PAGE_SIZE,
+  reportBookmarkReview,
+  BOOKMARK_REVIEW_TYPE,
+  BookmarkGrade,
+} from '../services/bookmarkApi';
 import { AUTH_EXPIRED_RESULT } from '../services/api';
+import { playRememberedSound } from '../utils/effectSound';
 import { checkVipGate, clearVipGateCache } from '../services/vipGate';
 
 /**
- * 生词本复习页
+ * 生词本复习页（与「分类卡组背词页」相互独立）
  * - 从生词本列表点击第 N 个单词进入，队列从该词开始，可连续复习到列表末尾
  * - 列表每次只取 BOOKMARK_PAGE_SIZE(20) 个，剩余不足 PREFETCH_THRESHOLD 张时
  *   自动预取下一页，用户一直往后翻也不会断档
+ * - 底部四个档位直接对应服务端 type：困难 0 / 一般 1 / 容易 3 / 已记住 4，
+ *   只上报给生词本卡组，不走分类卡组的 SRS 记忆算法
  */
 
 /** 队列剩余多少张卡片时开始预取下一页 */
@@ -51,7 +59,7 @@ function mergeWords(prev: Word[], next: Word[]): Word[] {
 
 export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route, navigation }) => {
   const params = route.params || {};
-  const { state, stats, recordReview } = useProgress();
+  const { state, stats } = useProgress();
   // 会员状态与注册时间都来自用户信息
   const { user, refreshUserInfo } = useAuth();
 
@@ -81,7 +89,7 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [learnedInSessionCount, setLearnedInSessionCount] = useState(0);
   /** 被会员限制拦截下来的评分，开通会员后自动继续 */
-  const pendingGradeRef = useRef<'hard' | 'remembered' | null>(null);
+  const pendingGradeRef = useRef<BookmarkGrade | null>(null);
   /** 需要升级会员时的提示文案（非空即弹窗） */
   const [vipGateMessage, setVipGateMessage] = useState<string | null>(null);
   /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
@@ -190,25 +198,29 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     setCurrentIndex((prev) => prev + 1);
   };
 
-  const handleGrade = async (grade: 'hard' | 'remembered') => {
+  const handleGrade = async (grade: BookmarkGrade) => {
     if (!currentWord || grading) return;
 
     setGrading(true);
     setBoundaryFailed(false);
     try {
-      // 非会员达到免费额度时先拦截，引导升级会员后再继续（与背词页同一套规则）
-      const gate = await checkVipGate({
-        userVip: (user as any)?.vip,
-        masteredCount: stats.masteredCount,
-        createDate: (user as any)?.createDate,
-      });
-      if (gate.blocked) {
-        pendingGradeRef.current = grade;
-        setVipGateMessage(gate.message || '升级 VIP 会员后可继续使用');
-        return;
+      // 只有「已记住」受免费额度限制，困难/一般/容易只是复习档位，不做拦截
+      if (grade === 'remembered') {
+        const gate = await checkVipGate({
+          userVip: (user as any)?.vip,
+          masteredCount: stats.masteredCount,
+          createDate: (user as any)?.createDate,
+        });
+        if (gate.blocked) {
+          pendingGradeRef.current = grade;
+          setVipGateMessage(gate.message || '升级 VIP 会员后可继续使用');
+          return;
+        }
       }
 
-      await recordReview(currentWord.id, grade);
+      // 生词本复习独立上报：把档位对应的 type 报给生词本卡组
+      await reportBookmarkReview(currentWord.id, BOOKMARK_REVIEW_TYPE[grade]);
+      if (grade === 'remembered') playRememberedSound();
       setLearnedInSessionCount((prev) => prev + 1);
 
       // 队列里还有下一张
@@ -250,7 +262,7 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
 
   /**
    * 从会员页返回：先刷新用户信息与会员状态，
-   * 已开通会员就自动继续刚才被拦截的「明天复习 / 已记住」。
+   * 已开通会员就自动继续刚才被拦截的「已记住」。
    */
   useFocusEffect(
     useCallback(() => {
@@ -480,29 +492,49 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
         </TouchableOpacity>
       ) : null}
 
+      {/* 底部操作条：返回 + 困难/一般/容易/已记住（各自对应服务端 type） */}
       <View style={styles.bottomBar}>
         <View style={styles.actionRow}>
           <TouchableOpacity
-            style={[styles.actionBtn, styles.backAction]}
+            style={styles.backBtn}
             onPress={() => navigation.goBack()}
             activeOpacity={0.85}
           >
             <Ionicons name="arrow-back" size={18} color={Colors.textSecondary} />
-            <Text style={[styles.actionBtnText, styles.backActionText]}>返回</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.actionBtn, styles.tomorrowAction, grading && styles.actionBtnDisabled]}
+            style={[styles.gradeBtn, styles.hardAction, grading && styles.actionBtnDisabled]}
             onPress={() => handleGrade('hard')}
             activeOpacity={0.85}
             disabled={grading}
           >
-            <Ionicons name="time-outline" size={18} color={Colors.primary} />
-            <Text style={[styles.actionBtnText, styles.tomorrowActionText]}>明天复习</Text>
+            <Ionicons name="alert-circle-outline" size={15} color={Colors.danger} />
+            <Text style={[styles.gradeBtnText, styles.hardActionText]}>困难</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.actionBtn, styles.rememberAction, grading && styles.actionBtnDisabled]}
+            style={[styles.gradeBtn, styles.normalAction, grading && styles.actionBtnDisabled]}
+            onPress={() => handleGrade('normal')}
+            activeOpacity={0.85}
+            disabled={grading}
+          >
+            <Ionicons name="time-outline" size={15} color={Colors.warning} />
+            <Text style={[styles.gradeBtnText, styles.normalActionText]}>一般</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.gradeBtn, styles.easyAction, grading && styles.actionBtnDisabled]}
+            onPress={() => handleGrade('easy')}
+            activeOpacity={0.85}
+            disabled={grading}
+          >
+            <Ionicons name="happy-outline" size={15} color={Colors.primary} />
+            <Text style={[styles.gradeBtnText, styles.easyActionText]}>容易</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.gradeBtn, styles.rememberAction, grading && styles.actionBtnDisabled]}
             onPress={() => handleGrade('remembered')}
             activeOpacity={0.85}
             disabled={grading}
@@ -510,9 +542,9 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
             {grading ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
-              <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+              <Ionicons name="checkmark-circle" size={15} color="#FFFFFF" />
             )}
-            <Text style={[styles.actionBtnText, styles.rememberActionText]}>已记住</Text>
+            <Text style={[styles.gradeBtnText, styles.rememberActionText]}>已记住</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -530,6 +562,7 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
           setVipGateMessage(null);
           pendingGradeRef.current = null;
         }}
+        onClose={() => setVipGateMessage(null)}
       />
 
       <ConfirmDialog
@@ -541,6 +574,7 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
         showCancel={dialog?.showCancel}
         onConfirm={dialog?.onConfirm}
         onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );
@@ -736,49 +770,67 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: 'row',
-    gap: 10,
-  },
-  actionBtn: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 6,
-    paddingVertical: 14,
-    borderRadius: 14,
-    borderWidth: 1,
   },
   actionBtnDisabled: {
     opacity: 0.6,
   },
-  actionBtnText: {
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  backAction: {
-    flex: 0.85,
+  // 返回：icon 按钮，宽度固定，给四个评分按钮留出空间
+  backBtn: {
+    width: 34,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: Colors.background,
+    borderWidth: 1,
     borderColor: Colors.border,
   },
-  backActionText: {
-    color: Colors.textSecondary,
+  gradeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    height: 44,
+    paddingHorizontal: 2,
+    borderRadius: 12,
+    borderWidth: 1,
   },
-  tomorrowAction: {
-    flex: 1.32,
+  gradeBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  hardAction: {
+    backgroundColor: Colors.danger + '12',
+    borderColor: Colors.danger + '30',
+  },
+  hardActionText: {
+    color: Colors.danger,
+  },
+  normalAction: {
+    backgroundColor: Colors.warning + '14',
+    borderColor: Colors.warning + '35',
+  },
+  normalActionText: {
+    color: Colors.warning,
+  },
+  easyAction: {
     backgroundColor: Colors.primary + '12',
     borderColor: Colors.primary + '30',
   },
-  tomorrowActionText: {
+  easyActionText: {
     color: Colors.primary,
   },
   rememberAction: {
-    flex: 1.32,
     backgroundColor: Colors.success,
     borderColor: Colors.success,
     shadowColor: Colors.success,
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.28,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowRadius: 6,
+    elevation: 3,
   },
   rememberActionText: {
     color: '#FFFFFF',

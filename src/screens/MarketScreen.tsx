@@ -272,6 +272,7 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
         message={`确定把「${pendingPack?.name || ''}」添加到我的卡组？`}
         onConfirm={confirmInstall}
         onCancel={() => setPendingPack(null)}
+        onClose={() => setPendingPack(null)}
       />
 
       <ConfirmDialog
@@ -283,6 +284,7 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
         showCancel={dialog?.showCancel}
         onConfirm={dialog?.onConfirm}
         onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );

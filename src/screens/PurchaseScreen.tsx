@@ -578,6 +578,7 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
         showCancel={dialog?.showCancel}
         onConfirm={dialog?.onConfirm}
         onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );

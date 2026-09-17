@@ -300,6 +300,20 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
           if (target) confirmDelete(target);
         }}
         onCancel={() => setPendingDelete(null)}
+        onClose={() => setPendingDelete(null)}
+      />
+
+      {/* 加载失败 / 需要登录 等提示：之前只在 state 里设了 dialog 却没渲染，弹不出来 */}
+      <ConfirmDialog
+        visible={dialog !== null}
+        title={dialog?.title || ''}
+        message={dialog?.message || ''}
+        confirmText={dialog?.confirmText}
+        cancelText={dialog?.cancelText}
+        showCancel={dialog?.showCancel}
+        onConfirm={dialog?.onConfirm}
+        onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );

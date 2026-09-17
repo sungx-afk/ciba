@@ -792,6 +792,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
           setVipGateMessage(null);
           pendingGradeRef.current = null;
         }}
+        onClose={() => setVipGateMessage(null)}
       />
 
       <ConfirmDialog
@@ -803,6 +804,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         showCancel={dialog?.showCancel}
         onConfirm={dialog?.onConfirm}
         onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );

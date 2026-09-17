@@ -294,6 +294,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         message="确定要退出登录吗？"
         onConfirm={confirmLogout}
         onCancel={() => setLogoutVisible(false)}
+        onClose={() => setLogoutVisible(false)}
       />
 
       <ConfirmDialog
@@ -305,6 +306,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         showCancel={dialog?.showCancel}
         onConfirm={dialog?.onConfirm}
         onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );

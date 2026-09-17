@@ -185,12 +185,26 @@ interface ProgressContextValue {
   // 学习进度
   state: ProgressState;
   stats: LearningStats;
-  recordReview: (wordId: number, grade: ReviewGrade) => Promise<void>;
+  /**
+   * 学习结果上报：options.packId 指定卡片所属卡组，
+   * 生词本这类不在 words/todayWords/packWords 列表里的单词必须显式传入，
+   * 否则会落到当前选中的卡组。
+   */
+  recordReview: (
+    wordId: number,
+    grade: ReviewGrade,
+    options?: { packId?: number }
+  ) => Promise<void>;
   /**
    * 批量记录学习结果（列表页「全部记住」）:
    * 一次批量上报 + 一次本地状态刷新，失败会抛出异常。
+   * options.packId 同上，整批单词共用一个卡组。
    */
-  recordReviews: (wordIds: number[], grade: ReviewGrade) => Promise<void>;
+  recordReviews: (
+    wordIds: number[],
+    grade: ReviewGrade,
+    options?: { packId?: number }
+  ) => Promise<void>;
   /** 加入/取消生词本；加入会同步到服务端，wordName 传了就不必再去列表里找 */
   toggleBookmark: (wordId: number, wordName?: string) => Promise<void>;
   updateSettings: (newSettings: Partial<Pick<ProgressState, 'dailyGoal' | 'accent' | 'autoPronounce' | 'speechRate'>>) => Promise<void>;
@@ -461,7 +475,11 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [words, todayWords, packWords, currentPack?.id]
   );
 
-  const recordReview = async (wordId: number, grade: ReviewGrade) => {
+  const recordReview = async (
+    wordId: number,
+    grade: ReviewGrade,
+    options?: { packId?: number }
+  ) => {
     const now = Date.now();
     const today = getTodayString();
     const currentProg = state.progressMap[wordId] || emptyProgress(wordId);
@@ -485,7 +503,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     // 异步上报学习结果到服务端 (type: 0=重来 1=困难 2=一般 3=容易)
     // 优先使用单词所属卡组 id (learn-by-menu 返回的 package_id)
-    const packId = resolvePackId(wordId);
+    const packId = options?.packId ?? resolvePackId(wordId);
 
     // 本地累计该卡组「已掌握数量」的变化量，供分类卡组列表等处实时刷新
     if (packId && masteredDelta !== 0) {
@@ -507,7 +525,11 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
    *  - 先上报再落本地状态，上报失败界面不做变化，避免「本地已记住、服务端还没记住」
    *  - 所有单词共用一份新进度，只做一次 AsyncStorage 写入，界面一次性刷新
    */
-  const recordReviews = async (wordIds: number[], grade: ReviewGrade) => {
+  const recordReviews = async (
+    wordIds: number[],
+    grade: ReviewGrade,
+    options?: { packId?: number }
+  ) => {
     const ids = Array.from(new Set(wordIds));
     if (!ids.length) return;
 
@@ -528,7 +550,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       progressMap[wordId] = updatedProg;
       todaySet.add(wordId);
 
-      const packId = resolvePackId(wordId);
+      const packId = options?.packId ?? resolvePackId(wordId);
       if (!packId) continue; // 本地词库没有卡组 id，只更新本地进度
       const cardIds = groups.get(packId);
       if (cardIds) cardIds.push(wordId);

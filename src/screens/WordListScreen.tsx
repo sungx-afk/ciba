@@ -942,6 +942,7 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
         showCancel={dialog?.showCancel}
         onConfirm={dialog?.onConfirm}
         onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );

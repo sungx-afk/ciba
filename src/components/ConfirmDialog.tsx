@@ -18,6 +18,12 @@ export interface DialogPayload {
   showCancel?: boolean;
   onConfirm?: () => void;
   onCancel?: () => void;
+  /**
+   * 关闭弹窗：父级用它把 visible 对应的 state 置回 false。
+   * 组件自己不能关闭弹窗，所以「确定 / 取消」按下时都会先调它再执行业务回调，
+   * 保证纯提示弹窗（没写 onConfirm）也能被关掉，不会卡住页面。
+   */
+  onClose?: () => void;
 }
 
 interface ConfirmDialogProps extends DialogPayload {
@@ -33,20 +39,32 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   showCancel = true,
   onConfirm,
   onCancel,
+  onClose,
 }) => {
+  // 先关弹窗再跑业务回调：业务回调里如果又开了新弹窗，不会被这一步覆盖掉
+  const handleConfirm = () => {
+    onClose?.();
+    onConfirm?.();
+  };
+
+  const handleCancel = () => {
+    onClose?.();
+    onCancel?.();
+  };
+
   return (
-    <Modal transparent visible={visible} animationType="fade">
+    <Modal transparent visible={visible} animationType="fade" onRequestClose={handleCancel}>
       <View style={styles.overlay}>
         <View style={styles.dialog}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.message}>{message}</Text>
           <View style={styles.buttonRow}>
             {showCancel ? (
-              <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel}>
                 <Text style={styles.cancelText}>{cancelText}</Text>
               </TouchableOpacity>
             ) : null}
-            <TouchableOpacity style={styles.confirmBtn} onPress={onConfirm}>
+            <TouchableOpacity style={styles.confirmBtn} onPress={handleConfirm}>
               <Text style={styles.confirmText}>{confirmText}</Text>
             </TouchableOpacity>
           </View>

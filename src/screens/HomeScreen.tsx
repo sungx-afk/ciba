@@ -1432,6 +1432,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         showCancel={dialog?.showCancel}
         onConfirm={dialog?.onConfirm}
         onCancel={dialog?.onCancel}
+        onClose={() => setDialog(null)}
       />
     </SafeAreaView>
   );
