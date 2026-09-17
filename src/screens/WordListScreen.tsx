@@ -19,7 +19,7 @@ interface WordListScreenProps {
   navigation: any;
 }
 
-type FilterType = 'all' | 'unlearned' | 'mastered' | 'bookmarked';
+type FilterType = 'all' | 'unlearned' | 'mastered';
 
 export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigation }) => {
   const { category, subCategory, source, title: routeTitle } = route.params || {};
@@ -53,12 +53,10 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     return baseWords.filter((w) => {
       const p = state.progressMap[w.id];
       const isMastered = p?.status === 'mastered';
-      const isBookmarked = p?.isBookmarked || false;
 
       // 状态筛选
       if (activeFilter === 'mastered' && !isMastered) return false;
       if (activeFilter === 'unlearned' && isMastered) return false;
-      if (activeFilter === 'bookmarked' && !isBookmarked) return false;
 
       return true;
     });
@@ -119,7 +117,6 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
             { id: 'all', label: '全部' },
             { id: 'unlearned', label: '待掌握' },
             { id: 'mastered', label: '已掌握' },
-            { id: 'bookmarked', label: '生词本' },
           ] as { id: FilterType; label: string }[]
         ).map((tab) => {
           const isActive = activeFilter === tab.id;

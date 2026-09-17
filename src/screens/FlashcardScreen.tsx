@@ -164,9 +164,6 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       if (filter === 'unlearned') {
         return p?.status !== 'mastered';
       }
-      if (filter === 'bookmarked') {
-        return p?.isBookmarked;
-      }
 
       return true;
     });
