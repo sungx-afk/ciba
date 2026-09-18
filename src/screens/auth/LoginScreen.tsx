@@ -487,7 +487,7 @@ export const LoginScreen: React.FC = () => {
               ) : (
                 <View style={styles.formBody}>
                   <AuthInput
-                    placeholder="手机号 / 电子邮箱 / 账号"
+                    placeholder="手机号 / 账号"
                     keyboardType="email-address"
                     iconName="person-outline"
                     value={account}
