@@ -22,6 +22,7 @@ import {
   PRICE_TAG_VERSION,
   priceTagToPlan,
 } from '../config/iapConfig';
+import { AGREEMENT_URL, POLICY_URL } from '../config/legal';
 import {
   IapProduct,
   IapPurchase,
@@ -41,10 +42,6 @@ import {
 } from '../services/iapService';
 
 const BENEFITS = ['词库全解锁：高中 / 四级 / 考研 / 托福', '后续新增词库免费用'];
-
-// TODO: 用户协议与隐私政策暂时指向同一页面，后续拆成各自的地址
-const AGREEMENT_URL = 'https://cibaen.com/privacy-policy.html';
-const POLICY_URL = 'https://cibaen.com/privacy-policy.html';
 
 interface PurchaseScreenProps {
   navigation: any;

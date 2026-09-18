@@ -16,6 +16,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Colors } from '../../theme/colors';
 import { AuthInput } from '../../components/AuthInput';
 import { CountdownButton } from '../../components/CountdownButton';
+import { AGREEMENT_URL, POLICY_URL } from '../../config/legal';
 import { AuthApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 
@@ -30,7 +31,8 @@ export const RegisterScreen: React.FC = () => {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
-  const [agreeTerms, setAgreeTerms] = useState(true);
+  // 默认不勾选，由用户主动勾选
+  const [agreeTerms, setAgreeTerms] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   // 格式化手机号
@@ -71,7 +73,7 @@ export const RegisterScreen: React.FC = () => {
   // 提交注册
   const handleRegister = async () => {
     if (!agreeTerms) {
-      Alert.alert('提示', '请先阅读并勾选用户协议与隐私政策');
+      Alert.alert('提示', '请先阅读并勾选《用户协议》与《隐私政策》');
       return;
     }
 
@@ -218,34 +220,46 @@ export const RegisterScreen: React.FC = () => {
                 )}
               </TouchableOpacity>
 
-              {/* 条款勾选 */}
-              <TouchableOpacity
-                style={styles.termsBox}
-                onPress={() => setAgreeTerms(!agreeTerms)}
-                activeOpacity={0.8}
-              >
-                <Ionicons
-                  name={agreeTerms ? 'checkmark-circle' : 'ellipse-outline'}
-                  size={16}
-                  color={agreeTerms ? Colors.primary : '#8BA5B5'}
-                />
-                <Text style={styles.termsText}>
-                  注册即代表您已同意
-                  <Text
-                    style={styles.termsLink}
-                    onPress={() => Alert.alert('用户协议', '欢迎使用糍粑背单词。')}
-                  >
-                    《用户协议》
+              {/* 条款勾选：勾选区与两个协议链接各自独立可点 */}
+              <View style={styles.termsBox}>
+                <TouchableOpacity
+                  style={styles.termsCheckArea}
+                  onPress={() => setAgreeTerms((prev) => !prev)}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 8, bottom: 8, left: 6, right: 4 }}
+                >
+                  <Ionicons
+                    name={agreeTerms ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={16}
+                    color={agreeTerms ? Colors.primary : '#8BA5B5'}
+                  />
+                  <Text style={[styles.termsText, styles.termsPrefix]}>
+                    注册即代表您已同意
                   </Text>
-                  与
-                  <Text
-                    style={styles.termsLink}
-                    onPress={() => Alert.alert('隐私政策', '您的隐私受到严密保护。')}
-                  >
-                    《隐私政策》
-                  </Text>
-                </Text>
-              </TouchableOpacity>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.6}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                  onPress={() =>
+                    navigation.navigate('WebPage', { url: AGREEMENT_URL, title: '用户协议' })
+                  }
+                >
+                  <Text style={styles.termsLink}>《用户协议》</Text>
+                </TouchableOpacity>
+
+                <Text style={styles.termsText}>与</Text>
+
+                <TouchableOpacity
+                  activeOpacity={0.6}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                  onPress={() =>
+                    navigation.navigate('WebPage', { url: POLICY_URL, title: '隐私政策' })
+                  }
+                >
+                  <Text style={styles.termsLink}>《隐私政策》</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
 
@@ -401,18 +415,27 @@ const styles = StyleSheet.create({
   },
   termsBox: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 18,
     paddingHorizontal: 4,
   },
+  termsCheckArea: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   termsText: {
     fontSize: 12,
     color: '#5A7A8A',
-    marginLeft: 6,
     lineHeight: 18,
   },
+  termsPrefix: {
+    marginLeft: 6,
+  },
   termsLink: {
+    fontSize: 12,
+    lineHeight: 18,
     color: '#35566A',
     fontWeight: '600',
   },
