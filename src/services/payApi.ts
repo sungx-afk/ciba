@@ -121,13 +121,19 @@ export const PayApi = {
    *
    * ⚠️ 实测发现：参数缺失时后端返回的是 result: 1，而 api.ts 把 1 视为成功，
    *    所以这里强制校验 transaction_id 必传；建议后端后续把参数错误也返回非 0/1 的码。
+   *
+   * ⚠️ 更坑的是：result 0/1 只代表「接口通了」，不代表会员真的开通了。
+   *    「苹果核销失败 / transaction_id 取不到」等场景下后端同样返回 result: 1，
+   *    但 vip 与 end_date 都是空的；上层不看业务字段就会误报「购买/恢复成功」。
+   *    所以这里必须再按业务字段补一次成功校验。
    */
   async verifyAppleReceipt(payload: AppleVerifyPayload): Promise<AppleVerifyResult> {
     if (!payload.transaction_id) {
       throw new APIError(-1, '缺少 transaction_id，无法核销支付凭证');
     }
+    let res: AppleVerifyResult;
     try {
-      return await api.postForm<AppleVerifyResult>('/pay/ios/verify', {
+      res = await api.postForm<AppleVerifyResult>('/pay/ios/verify', {
         transaction_id: payload.transaction_id,
         product_id: payload.product_id,
         original_transaction_id: payload.original_transaction_id,
@@ -144,5 +150,20 @@ export const PayApi = {
       }
       throw e;
     }
+
+    // 真正核销成功一定带 vip: 1 或 end_date，两者都没有说明会员并没有开通
+    const vipFlag = res?.vip === undefined || res?.vip === null ? undefined : Number(res.vip);
+    const endDate = res?.end_date ? String(res.end_date) : '';
+    if (vipFlag !== 1 && !endDate) {
+      const resultCode = typeof res?.result === 'number' ? res.result : -1;
+      console.warn('[PayApi] verify 未开通会员', JSON.stringify(res));
+      // result === 1 时被 api.ts 当成成功放行了，这里必须补抛给上层，否则界面会误报成功
+      throw new APIError(
+        resultCode,
+        res?.msg || '苹果支付核销失败，会员未开通（服务端未返回有效期）'
+      );
+    }
+
+    return res;
   },
 };

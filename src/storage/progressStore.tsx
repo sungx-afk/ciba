@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+  useCallback,
+} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import rawWordsData from '../data/words.json';
 import { Word, WordProgress, WordStatus, ProgressState, LearningStats } from '../types';
@@ -14,7 +22,7 @@ const TOP_PACK_KEY = '@ciba_selected_top_pack';
 
 /**
  * 按账号隔离本地存储：登录后 key 带上用户 id，未登录用公共（游客）key。
- * 这样切换账号时，学习进度、打卡天数、每日目标、当前词库都跟着账号走。
+ * 这样切换账号时，学习进度、打卡天数、发音设置、当前词库都跟着账号走。
  */
 function scopedKey(base: string, accountId: string): string {
   return accountId ? `${base}#${accountId}` : base;
@@ -167,7 +175,6 @@ function applyGrade(
 
 const defaultState: ProgressState = {
   progressMap: {},
-  dailyGoal: 20,
   accent: 'en-US',
   autoPronounce: true,
   speechRate: 0.9,
@@ -207,7 +214,9 @@ interface ProgressContextValue {
   ) => Promise<void>;
   /** 加入/取消生词本；加入会同步到服务端，wordName 传了就不必再去列表里找 */
   toggleBookmark: (wordId: number, wordName?: string) => Promise<void>;
-  updateSettings: (newSettings: Partial<Pick<ProgressState, 'dailyGoal' | 'accent' | 'autoPronounce' | 'speechRate'>>) => Promise<void>;
+  updateSettings: (
+    newSettings: Partial<Pick<ProgressState, 'accent' | 'autoPronounce' | 'speechRate'>>
+  ) => Promise<void>;
   resetProgress: () => Promise<void>;
   exportProgressData: () => string;
   isWordDue: (wordId: number) => boolean;
@@ -291,6 +300,8 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [todayWordsTotal, setTodayWordsTotal] = useState(0);
   const [todayWordsPackId, setTodayWordsPackId] = useState<number | null>(null);
   const [isLoadingTodayWords, setIsLoadingTodayWords] = useState(false);
+  // 今日单词请求代次：只让最后一次请求落地，避免旧卡组的结果盖掉新卡组的数据
+  const todayWordsReqRef = useRef(0);
 
   // 子卡组单词列表
   const [packWords, setPackWords] = useState<Word[]>([]);
@@ -388,7 +399,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
 
     (async () => {
-      // ② 学习进度（含打卡天数、每日目标、发音设置）
+      // ② 学习进度（含打卡天数、发音设置）
       try {
         const json = await readScoped(progressKey, STORAGE_KEY);
         if (cancelled) return;
@@ -475,6 +486,29 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [words, todayWords, packWords, currentPack?.id]
   );
 
+  /**
+   * 把服务端卡片的最新 type 写回内存里的单词列表缓存。
+   * 列表页「未记住 / 已记住」分组直接读 word.type，
+   * 不同步的话：在背词页给一个已记住(type=4)的单词点「明天复习」(type=1) 后，
+   * 返回列表它仍带着旧的 type=4，还留在「已记住」区，要重新拉取才会纠正。
+   */
+  const syncWordTypes = useCallback((updates: Map<number, number>) => {
+    if (!updates.size) return;
+    const merge = (list: Word[]): Word[] => {
+      let changed = false;
+      const next = list.map((w) => {
+        const type = updates.get(w.id);
+        if (type === undefined || w.type === type) return w;
+        changed = true;
+        return { ...w, type };
+      });
+      return changed ? next : list; // 没有变化时保持原引用，避免多余重渲染
+    };
+    setWords(merge);
+    setTodayWords(merge);
+    setPackWords(merge);
+  }, []);
+
   const recordReview = async (
     wordId: number,
     grade: ReviewGrade,
@@ -514,7 +548,11 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
 
     if (packId) {
-      packLibrary.markNoteRead(packId, wordId, GRADE_TYPE[grade]);
+      const type = GRADE_TYPE[grade];
+      // 与上面的本地进度一致地乐观更新：卡片状态按服务端口径同步一次，
+      // 「明天复习」把已记住的单词退回学习中也立刻生效
+      syncWordTypes(new Map([[wordId, type]]));
+      packLibrary.markNoteRead(packId, wordId, type);
     }
   };
 
@@ -559,12 +597,15 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
 
     // ② 批量上报；失败直接抛出，由调用方提示用户
+    const batchType = GRADE_TYPE[grade];
     for (const [packId, cardIds] of groups) {
       await packLibrary.markNotesRead(
         packId,
-        cardIds.map((cardId) => ({ cardId, type: GRADE_TYPE[grade] }))
+        cardIds.map((cardId) => ({ cardId, type: batchType }))
       );
     }
+    // 同步每条卡片的 type，「全部记住」这一类批量操作也要立即反映到列表分组上
+    syncWordTypes(new Map(ids.map((id) => [id, batchType])));
 
     // ③ 上报成功后才落地本地状态
     const newState: ProgressState = {
@@ -629,7 +670,7 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   const updateSettings = async (
-    newSettings: Partial<Pick<ProgressState, 'dailyGoal' | 'accent' | 'autoPronounce' | 'speechRate'>>
+    newSettings: Partial<Pick<ProgressState, 'accent' | 'autoPronounce' | 'speechRate'>>
   ) => {
     const newState: ProgressState = { ...state, ...newSettings };
     await saveState(newState);
@@ -638,7 +679,6 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const resetProgress = async () => {
     const cleared: ProgressState = {
       ...defaultState,
-      dailyGoal: state.dailyGoal,
       accent: state.accent,
     };
     setPackMasteredDelta({});
@@ -761,15 +801,20 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         sub?: string;
       } = {}
     ): Promise<Word[]> => {
+      const req = ++todayWordsReqRef.current;
       setIsLoadingTodayWords(true);
       try {
         const { words: list, total } = await packLibrary.fetchTodayWords(packId, options);
-        setTodayWords(list);
-        setTodayWordsTotal(total);
-        setTodayWordsPackId(packId);
+        // 等待期间可能已经为另一个卡组发了新请求（例如焦点换到了别的分类卡组），
+        // 这时要丢弃旧结果，否则旧卡组的单词会盖回来，今日学习区一直停在旧卡组上
+        if (req === todayWordsReqRef.current) {
+          setTodayWords(list);
+          setTodayWordsTotal(total);
+          setTodayWordsPackId(packId);
+        }
         return list;
       } finally {
-        setIsLoadingTodayWords(false);
+        if (req === todayWordsReqRef.current) setIsLoadingTodayWords(false);
       }
     },
     []
@@ -863,7 +908,6 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       dueTodayCount,
       todayLearnedCount: (state?.todayLearnedIds || []).length,
       streakDays: state?.streakDays || 0,
-      dailyGoal: state?.dailyGoal || 20,
     };
   }, [state, words]);
 

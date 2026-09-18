@@ -39,7 +39,6 @@ export interface WordProgress {
 
 export interface ProgressState {
   progressMap: Record<number, WordProgress>;
-  dailyGoal: number;
   accent: 'en-US' | 'en-GB';
   autoPronounce: boolean;
   speechRate: number;
@@ -56,5 +55,4 @@ export interface LearningStats {
   dueTodayCount: number;
   todayLearnedCount: number;
   streakDays: number;
-  dailyGoal: number;
 }

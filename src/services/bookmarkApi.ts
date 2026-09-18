@@ -10,16 +10,13 @@ import { Word } from '../types';
 export const BOOKMARK_PAGE_SIZE = 20;
 
 /**
- * 生词本页面的两份数据来源：
- *  - 中部列表（未记住）：type = 0 未学 / 1、2、3 学习中
- *  - 底部区域（已记住）：type = 4
- * 两处都按这些 type 从服务端 learn-by-menu 拉取。
+ * 生词本页面的三个分组：按服务端卡片 type 过滤。
+ *  - 学习中：type = 0 未学 / 1、2、3 学习中
+ *  - 已记住：type = 4
+ *  - 全部：不带 type，服务端返回该卡组下全部卡片
  */
 export const BOOKMARK_LEARNING_TYPES = [0, 1, 2, 3];
 export const BOOKMARK_MASTERED_TYPES = [4];
-
-/** 单次循环拉取的分页上限，防止服务端 total 异常时死循环 */
-const MAX_LOOP_START = 20000;
 
 const PACK_FLAG_PATH = '/anki/pack/flag/default_movie_pack';
 const SORTERS = JSON.stringify([{ direction: 'desc', column: 'id' }]);
@@ -113,6 +110,8 @@ function cardToWord(card: any): Word {
     note: [phonetic, ...examples.map((e) => `· ${e}`)].filter(Boolean).join('\n'),
     cat: '',
     sub: '',
+    // 服务端学习状态：0 未学 / 1、2、3 学习中 / 4 已记住，列表据此分组展示
+    type: typeof card?.type === 'number' ? card.type : undefined,
     // 学习结果需要按卡片所属卡组上报，否则会落到当前选中的其它卡组
     ...(packageId ? { packageId } : {}),
   };
@@ -140,39 +139,6 @@ export async function fetchBookmarkedWords(
 /** 已缓存的生词本卡组 id（学习结果上报要用），未取过时为 0 */
 export function getCachedBookmarkPackId(): number {
   return cachedPackId;
-}
-
-/**
- * 按 type 循环拉全量：生词本页的中部列表（未记住）与底部区域（已记住）
- * 各自走一遍，分页有可能一页拿不完，这里一直取到服务端给完为止。
- */
-export async function fetchBookmarkedWordsByTypes(
-  types: number[],
-  limit = BOOKMARK_PAGE_SIZE
-): Promise<Word[]> {
-  // 先取一次卡组 id，后续分页直接用缓存，不必每页都重复请求
-  await fetchDefaultMoviePackId();
-
-  const all: Word[] = [];
-  const seen = new Set<number>();
-  let start = 0;
-
-  for (;;) {
-    const page = await fetchBookmarkedWords({ start, limit, types });
-
-    for (const w of page.words) {
-      if (seen.has(w.id)) continue;
-      seen.add(w.id);
-      all.push(w);
-    }
-
-    if (!page.words.length || !page.hasMore) break;
-    start += page.words.length;
-    // 服务端没给 hasMore / total 异常时的兜底，避免无限翻页
-    if (start > MAX_LOOP_START) break;
-  }
-
-  return all;
 }
 
 /**

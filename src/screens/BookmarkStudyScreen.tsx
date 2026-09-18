@@ -66,6 +66,10 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   /** 列表页带过来的已加载生词（服务端第一页起） */
   const initialWords: Word[] = Array.isArray(params.words) ? params.words : [];
   const initialTotal: number = Number(params.total) || initialWords.length;
+  /** 列表页当前 tab 的卡片状态过滤，翻页时要沿用，否则会从别的分组里接着取 */
+  const initialTypes: number[] | undefined = Array.isArray(params.types)
+    ? (params.types as number[])
+    : undefined;
   const startIndex: number = Math.max(
     0,
     Math.min(Number(params.startIndex) || 0, Math.max(0, initialWords.length - 1))
@@ -119,7 +123,11 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
       // 顺延 start 再取，避免「明明还有更多却提前结束会话」
       for (let attempt = 0; attempt < 3 && !added; attempt += 1) {
         const start = nextStartRef.current;
-        const page = await fetchBookmarkedWords({ start, limit: BOOKMARK_PAGE_SIZE });
+        const page = await fetchBookmarkedWords({
+          start,
+          limit: BOOKMARK_PAGE_SIZE,
+          types: initialTypes,
+        });
 
         const before = queueRef.current;
         const merged = mergeWords(before, page.words);

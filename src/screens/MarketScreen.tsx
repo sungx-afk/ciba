@@ -41,7 +41,6 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
   const firstSetup = route?.params?.firstSetup === true;
 
   const [packs, setPacks] = useState<RemotePack[]>([]);
-  const [myPacks, setMyPacks] = useState<RemotePack[]>([]);
   const [installedIds, setInstalledIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [installingId, setInstallingId] = useState<number | null>(null);
@@ -62,7 +61,6 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
         packLibrary.fetchPackList({ start: 0, limit: 100, parentId: 0 }),
       ]);
       setPacks(market.packs);
-      setMyPacks(mine.packs);
       const ids = new Set<number>();
       for (const p of mine.packs) {
         if (p.source_id) ids.add(Number(p.source_id));
@@ -79,31 +77,18 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
     loadMarket();
   }, [loadMarket]);
 
-  /** 已添加的卡组: 直接切换回分类页并选中它 */
-  const handleSwitchToInstalled = useCallback(
-    (marketPackId: number) => {
-      const mine = myPacks.find((p) => Number(p.source_id) === marketPackId);
-      if (mine) {
-        setInstalledPack(mine);
-        navigation.goBack();
-        return;
-      }
-      setDialog({
-        title: '提示',
-        message: '该卡组已添加，可在分类页顶部下拉切换',
-        showCancel: false,
-      });
-    },
-    [myPacks, setInstalledPack, navigation]
-  );
-
-  /** 点击「确定」: 已添加则切换，未添加则弹确认框后安装 */
+  /** 点击「确定」: 已添加的卡组不能选，未添加的弹确认框后安装 */
   const handleConfirm = useCallback(() => {
     const pack = packs.find((p) => p.id === selectedPackId);
     if (!pack) return;
 
+    // 双保险：卡片已禁止选中，这里再拦一次
     if (installedIds.has(pack.id)) {
-      handleSwitchToInstalled(pack.id);
+      setDialog({
+        title: '已添加',
+        message: `「${pack.name}」已在你的卡组中，市场不支持重复添加`,
+        showCancel: false,
+      });
       return;
     }
     if (!isLoggedIn) {
@@ -120,7 +105,7 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
     }
     if (installingId !== null) return;
     setPendingPack(pack);
-  }, [packs, selectedPackId, installedIds, handleSwitchToInstalled, isLoggedIn, installingId, navigation]);
+  }, [packs, selectedPackId, installedIds, isLoggedIn, installingId, navigation]);
 
   /** 确认框点「确定」: 执行安装 */
   const confirmInstall = useCallback(async () => {
@@ -157,15 +142,20 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
 
   const renderPackCard = (item: RemotePack) => {
     const installed = installedIds.has(item.id);
-    const selected = selectedPackId === item.id;
+    const selected = !installed && selectedPackId === item.id;
     return (
+      // 已添加的卡组：禁用点击，不允许再次选中/重复添加
       <TouchableOpacity
         key={String(item.id)}
-        style={[styles.packCard, selected && styles.packCardSelected]}
+        style={[styles.packCard, selected && styles.packCardSelected, installed && styles.packCardInstalled]}
         onPress={() => setSelectedPackId(selected ? null : item.id)}
+        disabled={installed}
         activeOpacity={0.75}
       >
-        <Text style={[styles.packName, selected && styles.packNameSelected]} numberOfLines={2}>
+        <Text
+          style={[styles.packName, selected && styles.packNameSelected, installed && styles.packNameInstalled]}
+          numberOfLines={2}
+        >
           {item.name}
         </Text>
 
@@ -173,6 +163,7 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
           <Text style={styles.packCount}>{item.card_count || 0} 词</Text>
           {installed ? (
             <View style={styles.installedTag}>
+              <Ionicons name="checkmark-circle" size={11} color={Colors.success} />
               <Text style={styles.installedTagText}>已添加</Text>
             </View>
           ) : null}
@@ -188,7 +179,10 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
   };
 
   const installing = installingId !== null;
-  const canConfirm = selectedPackId !== null && !installing;
+  // 已添加的卡组不可选：选中态本身就不会落到它们身上
+  const selectedPackInstalled =
+    selectedPackId !== null && installedIds.has(selectedPackId);
+  const canConfirm = selectedPackId !== null && !selectedPackInstalled && !installing;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -372,6 +366,12 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     backgroundColor: Colors.primaryLight,
   },
+  // 已添加：置灰且不可点击
+  packCardInstalled: {
+    backgroundColor: Colors.backgroundAlt,
+    borderColor: Colors.border,
+    opacity: 0.7,
+  },
   packName: {
     fontSize: 15,
     fontWeight: '600',
@@ -381,6 +381,9 @@ const styles = StyleSheet.create({
   packNameSelected: {
     color: Colors.primaryDark,
     fontWeight: '800',
+  },
+  packNameInstalled: {
+    color: Colors.textMuted,
   },
   packMetaRow: {
     flexDirection: 'row',
@@ -393,6 +396,9 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
   },
   installedTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 5,

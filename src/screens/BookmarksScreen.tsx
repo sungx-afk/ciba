@@ -7,13 +7,11 @@ import {
   FlatList,
   TouchableOpacity,
   SafeAreaView,
-  ScrollView,
   Animated,
   Easing,
   LayoutAnimation,
   Platform,
   UIManager,
-  Dimensions,
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
@@ -29,8 +27,10 @@ import { pronounceWord } from '../utils/speech';
 import { showToast } from '../utils/toast';
 import { playRememberedSound } from '../utils/effectSound';
 import {
-  fetchBookmarkedWordsByTypes,
+  fetchBookmarkedWords,
+  fetchDefaultMoviePackId,
   getCachedBookmarkPackId,
+  BOOKMARK_PAGE_SIZE,
   BOOKMARK_LEARNING_TYPES,
   BOOKMARK_MASTERED_TYPES,
 } from '../services/bookmarkApi';
@@ -46,42 +46,53 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
-/** 底部「已记住」区域高度 */
-const BOTTOM_PANEL_HEIGHT = Math.min(190, Math.max(130, Math.round(SCREEN_HEIGHT * 0.26)));
-/** 底部标签高度，也是飞行动画的终点尺寸 */
-const TAG_HEIGHT = 28;
-/** 飞行动画时长 */
-const FLY_DURATION = 560;
+/** 列表分组 */
+type TabKey = 'learning' | 'mastered' | 'all';
+
+interface TabMeta {
+  key: TabKey;
+  label: string;
+  /** 传给服务端的卡片状态过滤，不传表示该卡组下全部卡片 */
+  types?: number[];
+}
+
+/** 顶部三个 tab：学习中 / 已记住 / 全部，各自对应一组服务端 type 过滤 */
+const BOOKMARK_TABS: TabMeta[] = [
+  { key: 'learning', label: '学习中', types: BOOKMARK_LEARNING_TYPES },
+  { key: 'mastered', label: '已记住', types: BOOKMARK_MASTERED_TYPES },
+  { key: 'all', label: '全部', types: undefined },
+];
+
+const TAB_TYPES: Record<TabKey, number[] | undefined> = {
+  learning: BOOKMARK_LEARNING_TYPES,
+  mastered: BOOKMARK_MASTERED_TYPES,
+  all: undefined,
+};
+
+interface TabState {
+  words: Word[];
+  /** 服务端给出的该分组总数（不一定都已加载到本地） */
+  total: number;
+  hasMore: boolean;
+  loadingMore: boolean;
+}
+
+const emptyTab = (): TabState => ({ words: [], total: 0, hasMore: false, loadingMore: false });
+const emptyTabs = (): Record<TabKey, TabState> => ({
+  learning: emptyTab(),
+  mastered: emptyTab(),
+  all: emptyTab(),
+});
+
+/** 卡片淡出时长：按钮反馈之后才开始，避免「先消失再响应」 */
+const LEAVE_DURATION = 260;
 
 interface BookmarksScreenProps {
   navigation: any;
 }
 
-/** 某个元素在窗口中的位置（measureInWindow 的结果） */
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 /** 被 VIP 拦截、待开通会员后继续执行的「标记记住」 */
-type PendingMark =
-  | { type: 'single'; word: Word; from: Rect }
-  | { type: 'all'; words: Word[] };
-
-/** 一个正在飞往底部区域的单词标签 */
-interface FlyItem {
-  id: number;
-  label: string;
-  from: Rect;
-  to: { x: number; y: number };
-  /** 飞行层所在容器的窗口原点，用于把窗口坐标换算成相对坐标 */
-  origin: { x: number; y: number };
-  tagWidth: number;
-  progress: Animated.Value;
-}
+type PendingMark = { type: 'single'; word: Word } | { type: 'all'; words: Word[] };
 
 /** note 首行可能是音标（如「美 /ɡleɪd/  英 /ɡleɪd/」或「[ɡleɪd]」） */
 function extractPhonetic(note: string): string {
@@ -99,103 +110,35 @@ function noteWithoutPhonetic(note: string, phonetic: string): string {
   return flat.slice(phonetic.length).trim();
 }
 
-/** 测量元素在窗口中的位置 */
-function measureInWindow(ref: React.RefObject<any>): Promise<Rect | null> {
-  return new Promise((resolve) => {
-    if (!ref.current) {
-      resolve(null);
-      return;
-    }
-    ref.current.measureInWindow((x: number, y: number, width: number, height: number) => {
-      if (width === 0 && height === 0) resolve(null);
-      else resolve({ x, y, width, height });
-    });
-  });
-}
-
-/** 飞行中的标签：从卡片位置缩放移动到底部区域，同时卡片样式渐变为标签样式 */
-const FlyTag: React.FC<{ item: FlyItem }> = ({ item }) => {
-  const p = item.progress;
-  return (
-    <Animated.View
-      pointerEvents="none"
-      style={[
-        styles.flyTag,
-        {
-          left: p.interpolate({
-            inputRange: [0, 1],
-            outputRange: [item.from.x - item.origin.x, item.to.x - item.origin.x],
-          }),
-          top: p.interpolate({
-            inputRange: [0, 1],
-            outputRange: [item.from.y - item.origin.y, item.to.y - item.origin.y],
-          }),
-          width: p.interpolate({ inputRange: [0, 1], outputRange: [item.from.width, item.tagWidth] }),
-          height: p.interpolate({
-            inputRange: [0, 1],
-            outputRange: [item.from.height, TAG_HEIGHT],
-          }),
-          borderRadius: p.interpolate({ inputRange: [0, 1], outputRange: [14, 10] }),
-          paddingHorizontal: p.interpolate({ inputRange: [0, 1], outputRange: [14, 10] }),
-          backgroundColor: p.interpolate({
-            inputRange: [0, 0.55, 1],
-            outputRange: [
-              'rgba(255,255,255,1)',
-              'rgba(107,181,162,0.12)',
-              'rgba(107,181,162,0.12)',
-            ],
-          }),
-          borderColor: p.interpolate({
-            inputRange: [0, 0.55, 1],
-            outputRange: [
-              'rgba(212,229,235,1)',
-              'rgba(107,181,162,0.35)',
-              'rgba(107,181,162,0.35)',
-            ],
-          }),
-          opacity: p.interpolate({ inputRange: [0, 0.9, 1], outputRange: [1, 1, 0] }),
-        },
-      ]}
-    >
-      <Animated.View
-        style={{ opacity: p.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0, 0, 1] }) }}
-      >
-        <Ionicons name="checkmark" size={12} color={Colors.success} />
-      </Animated.View>
-      <Animated.Text
-        numberOfLines={1}
-        style={{
-          flexShrink: 1,
-          fontWeight: '700',
-          fontSize: p.interpolate({ inputRange: [0, 1], outputRange: [19, 13] }),
-          color: p.interpolate({
-            inputRange: [0, 0.55, 1],
-            outputRange: ['rgb(30,58,76)', 'rgb(107,181,162)', 'rgb(107,181,162)'],
-          }),
-        }}
-      >
-        {item.label}
-      </Animated.Text>
-    </Animated.View>
-  );
-};
-
 interface WordRowProps {
   word: Word;
+  /** 已经是「已记住」：右侧不再是可点的按钮，而是一个实心对勾 */
+  mastered: boolean;
   showDetail: boolean;
   accent: 'en-US' | 'en-GB';
   onPress: () => void;
-  /** rect 为卡片在窗口中的位置，飞行标签以此为起点 */
-  onMastered: (word: Word, rect: Rect) => Promise<void>;
+  onMastered: (word: Word) => Promise<void>;
 }
 
-/** 未记住的单词卡片：右侧为「标记为已记住」（生词本里的单词无需再加收藏） */
-const WordRow: React.FC<WordRowProps> = ({ word, showDetail, accent, onPress, onMastered }) => {
-  /** 0 -> 1：卡片淡出，把它「交给」飞行标签 */
-  const hide = useRef(new Animated.Value(0)).current;
-  /** 对勾按钮的按下反馈 */
+/**
+ * 生词卡片：右侧圆形按钮为「标记为已记住」。
+ * 点击后：按钮弹一下并由描边变实心（对勾放大回弹），卡片淡出右滑，
+ * 父组件紧接着把它从列表里删掉，layout 动画收拢留下的空隙。
+ */
+const WordRow: React.FC<WordRowProps> = ({
+  word,
+  mastered,
+  showDetail,
+  accent,
+  onPress,
+  onMastered,
+}) => {
+  /** 0 -> 1：按钮由描边变实心，给一个「已勾上」的确认反馈 */
+  const fill = useRef(new Animated.Value(0)).current;
+  /** 0 -> 1：卡片淡出并右滑，随后由列表删除 */
+  const leave = useRef(new Animated.Value(0)).current;
+  /** 按钮按下反馈 */
   const press = useRef(new Animated.Value(0)).current;
-  const cardRef = useRef<any>(null);
   const [busy, setBusy] = useState(false);
 
   const phonetic = useMemo(() => extractPhonetic(word.note), [word.note]);
@@ -206,13 +149,15 @@ const WordRow: React.FC<WordRowProps> = ({ word, showDetail, accent, onPress, on
     pronounceWord(word.word, { accent });
   };
 
-  const startMastered = async (rect: Rect) => {
-    Animated.timing(hide, { toValue: 1, duration: 140, useNativeDriver: true }).start();
+  const startMastered = async () => {
     try {
-      await onMastered(word, rect);
+      await onMastered(word);
     } catch {
-      // 标记失败：卡片淡回来
-      Animated.timing(hide, { toValue: 0, duration: 200, useNativeDriver: true }).start();
+      // 标记失败：按钮退回描边、卡片滑回来
+      Animated.parallel([
+        Animated.timing(fill, { toValue: 0, duration: 200, useNativeDriver: false }),
+        Animated.timing(leave, { toValue: 0, duration: 200, useNativeDriver: true }),
+      ]).start();
       setBusy(false);
       return;
     }
@@ -221,29 +166,40 @@ const WordRow: React.FC<WordRowProps> = ({ word, showDetail, accent, onPress, on
 
   const handleMastered = (e: any) => {
     e?.stopPropagation?.();
-    if (busy) return;
+    if (busy || mastered) return;
     setBusy(true);
 
+    // ① 按钮按下：缩一下再弹回
     Animated.sequence([
-      Animated.timing(press, { toValue: 1, duration: 110, useNativeDriver: true }),
+      Animated.timing(press, { toValue: 1, duration: 90, useNativeDriver: true }),
       Animated.spring(press, { toValue: 0, friction: 4, tension: 180, useNativeDriver: true }),
     ]).start();
+    // ② 由描边变实心，对勾同步放大回弹
+    Animated.spring(fill, { toValue: 1, friction: 5, tension: 140, useNativeDriver: false }).start();
+    // ③ 卡片随后淡出右滑，剩下的空隙由列表的 layout 动画收拢
+    Animated.timing(leave, {
+      toValue: 1,
+      duration: LEAVE_DURATION,
+      delay: 130,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
 
-    // 先量出卡片当前位置，再交给父组件播放飞行动画
-    const node = cardRef.current;
-    if (node?.measureInWindow) {
-      node.measureInWindow((x: number, y: number, width: number, height: number) => {
-        startMastered({ x, y, width, height });
-      });
-    } else {
-      startMastered({ x: 0, y: 0, width: 0, height: 0 });
-    }
+    // 先给反馈再上报，点击没有等待感
+    void startMastered();
   };
 
   return (
     <Animated.View
-      ref={cardRef}
-      style={[styles.card, { opacity: hide.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
+      style={[
+        styles.card,
+        {
+          opacity: leave.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+          transform: [
+            { translateX: leave.interpolate({ inputRange: [0, 1], outputRange: [0, 32] }) },
+          ],
+        },
+      ]}
     >
       <TouchableOpacity style={styles.cardInner} onPress={onPress} activeOpacity={0.7}>
         <View style={styles.cardMainRow}>
@@ -269,23 +225,82 @@ const WordRow: React.FC<WordRowProps> = ({ word, showDetail, accent, onPress, on
           </View>
 
           <View style={styles.actionRow}>
-            <Animated.View
-              style={{
-                transform: [
-                  { scale: press.interpolate({ inputRange: [0, 1], outputRange: [1, 0.82] }) },
-                ],
-              }}
-            >
-              <TouchableOpacity
-                style={[styles.roundBtn, styles.checkBtn]}
-                onPress={handleMastered}
-                activeOpacity={0.85}
-                disabled={busy}
-                accessibilityLabel="标记为已记住"
+            {mastered ? (
+              <View style={[styles.roundBtn, styles.doneBtn]} accessibilityLabel="已记住">
+                <Ionicons name="checkmark" size={20} color="#FFFFFF" />
+              </View>
+            ) : (
+              <Animated.View
+                style={{
+                  transform: [
+                    { scale: press.interpolate({ inputRange: [0, 1], outputRange: [1, 0.82] }) },
+                  ],
+                }}
               >
-                <Ionicons name="checkmark" size={20} color={Colors.success} />
-              </TouchableOpacity>
-            </Animated.View>
+                <TouchableOpacity
+                  onPress={handleMastered}
+                  activeOpacity={0.85}
+                  disabled={busy}
+                  accessibilityLabel="标记为已记住"
+                >
+                  <Animated.View
+                    style={[
+                      styles.roundBtn,
+                      {
+                        backgroundColor: fill.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [Colors.success + '15', Colors.success],
+                        }),
+                        borderColor: fill.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [Colors.success + '55', Colors.success],
+                        }),
+                      },
+                    ]}
+                  >
+                    <Animated.View
+                      style={{
+                        transform: [
+                          {
+                            scale: fill.interpolate({
+                              inputRange: [0, 0.45, 1],
+                              outputRange: [1, 1.35, 1],
+                            }),
+                          },
+                        ],
+                      }}
+                    >
+                      {/* 描边态与实心态的两个图标叠在一起交叉淡入淡出 */}
+                      <View style={styles.checkIconStack}>
+                        <Animated.View
+                          style={{
+                            opacity: fill.interpolate({
+                              inputRange: [0, 0.5, 1],
+                              outputRange: [1, 0.3, 0],
+                            }),
+                          }}
+                        >
+                          <Ionicons name="checkmark" size={20} color={Colors.success} />
+                        </Animated.View>
+                        <Animated.View
+                          style={[
+                            StyleSheet.absoluteFill,
+                            {
+                              opacity: fill.interpolate({
+                                inputRange: [0, 0.5, 1],
+                                outputRange: [0, 0.7, 1],
+                              }),
+                            },
+                          ]}
+                        >
+                          <Ionicons name="checkmark" size={20} color="#FFFFFF" />
+                        </Animated.View>
+                      </View>
+                    </Animated.View>
+                  </Animated.View>
+                </TouchableOpacity>
+              </Animated.View>
+            )}
           </View>
         </View>
 
@@ -303,20 +318,20 @@ const WordRow: React.FC<WordRowProps> = ({ word, showDetail, accent, onPress, on
 };
 
 /**
- * 生词本（UI 与「分类卡组单词列表」保持一致）：
- *  - 中部：未记住的单词 —— 服务端 type = 0/1/2/3 的卡片
- *  - 底部：已记住的单词标签 —— 服务端 type = 4 的卡片
- *  两份数据都按 type 从服务端分页取，可能有多页，列表页这里一次循环取完。
+ * 生词本：
+ *  - 顶部三个 tab（学习中 / 已记住 / 全部），各按自己的 type 过滤向服务端分页取数
+ *  - 滚动到底追加下一页，打开页面时不再循环拉全量
+ *  - 列表里点右侧对勾即标记为已记住，本地立刻从「学习中」移到「已记住」
  */
 export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) => {
   const { state, stats, recordReview, recordReviews, isLoggedIn } = useProgress();
   // 会员状态与注册时间都来自用户信息
   const { user, refreshUserInfo } = useAuth();
 
-  /** 中部：未记住 */
-  const [pendingWords, setPendingWords] = useState<Word[]>([]);
-  /** 底部：已记住 */
-  const [masteredWords, setMasteredWords] = useState<Word[]>([]);
+  /** 当前分组 */
+  const [activeTab, setActiveTab] = useState<TabKey>('learning');
+  /** 三个 tab 各自的分页数据 */
+  const [tabs, setTabs] = useState<Record<TabKey, TabState>>(emptyTabs);
   /** 生词本卡组 id：学习结果要按它上报 */
   const [bookmarkPackId, setBookmarkPackId] = useState(0);
 
@@ -327,63 +342,131 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
   const [showDetail, setShowDetail] = useState(false);
   /** 「全部记住」进行中：批量请求只有一个来回，这里只记录进行中与总数 */
   const [markAll, setMarkAll] = useState({ running: false, total: 0 });
-  const [flying, setFlying] = useState<FlyItem[]>([]);
   /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
   const [dialog, setDialog] = useState<DialogPayload | null>(null);
   /** 被会员限制拦截下来的「标记记住」，开通会员后自动继续 */
   const pendingMarkRef = useRef<PendingMark | null>(null);
 
-  const rootRef = useRef<any>(null);
-  const bottomRef = useRef<any>(null);
   // 防止并发请求 & 丢弃过期请求的结果
   const loadingRef = useRef(false);
-  const reqIdRef = useRef(0);
+  const genRef = useRef(0);
+  const reqIdRef = useRef<Record<TabKey, number>>({ learning: 0, mastered: 0, all: 0 });
+  /** loadMore 要读到最新的分页状态，又不能因为它重建回调 */
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
 
-  const load = useCallback(async (mode: 'initial' | 'refresh') => {
+  const activeState = tabs[activeTab];
+  const words = activeState.words;
+
+  /** 三个 tab 各拉第一页：一次拿到分组数量，切换 tab 无需等待 */
+  const loadTabs = useCallback(async (mode: 'initial' | 'refresh') => {
     if (loadingRef.current) return;
 
     loadingRef.current = true;
-    const reqId = ++reqIdRef.current;
+    const gen = ++genRef.current;
     if (mode === 'initial') setInitialLoading(true);
     else setRefreshing(true);
 
     try {
-      const [learning, mastered] = await Promise.all([
-        fetchBookmarkedWordsByTypes(BOOKMARK_LEARNING_TYPES),
-        fetchBookmarkedWordsByTypes(BOOKMARK_MASTERED_TYPES),
-      ]);
-      if (reqId !== reqIdRef.current) return; // 已发起更新的请求，丢弃这次结果
+      const failures: any[] = [];
 
-      setPendingWords(learning);
-      setMasteredWords(mastered);
-      setBookmarkPackId(getCachedBookmarkPackId());
-      setNeedLogin(false);
-      setErrorMsg('');
-    } catch (err: any) {
-      if (reqId !== reqIdRef.current) return;
+      // 先确定生词本卡组 id，后面三个 tab 的请求与上报共用它
+      try {
+        await fetchDefaultMoviePackId();
+        setBookmarkPackId(getCachedBookmarkPackId());
+      } catch (e) {
+        failures.push(e);
+      }
 
-      const msg =
-        err?.result === AUTH_EXPIRED_RESULT
-          ? '登录后即可同步你的生词本'
-          : err?.message || '生词本加载失败，请稍后重试';
+      await Promise.all(
+        BOOKMARK_TABS.map(async ({ key, types }) => {
+          const reqId = ++reqIdRef.current[key];
+          try {
+            const page = await fetchBookmarkedWords({
+              start: 0,
+              limit: BOOKMARK_PAGE_SIZE,
+              types,
+            });
+            if (gen !== genRef.current || reqId !== reqIdRef.current[key]) return;
+            setTabs((prev) => ({
+              ...prev,
+              [key]: {
+                words: page.words,
+                total: page.total,
+                hasMore: page.hasMore,
+                loadingMore: false,
+              },
+            }));
+          } catch (e) {
+            if (gen !== genRef.current || reqId !== reqIdRef.current[key]) return;
+            failures.push(e);
+          }
+        })
+      );
 
-      setNeedLogin(err?.result === AUTH_EXPIRED_RESULT);
-      setErrorMsg(msg);
-      setPendingWords([]);
-      setMasteredWords([]);
+      if (gen !== genRef.current) return;
+
+      const authErr = failures.find((e) => e?.result === AUTH_EXPIRED_RESULT);
+      if (failures.length) {
+        setNeedLogin(!!authErr);
+        setErrorMsg(
+          authErr
+            ? '登录后即可同步你的生词本'
+            : failures[0]?.message || '生词本加载失败，请稍后重试'
+        );
+      } else {
+        setNeedLogin(false);
+        setErrorMsg('');
+      }
     } finally {
       loadingRef.current = false;
-      if (reqId === reqIdRef.current) {
+      if (gen === genRef.current) {
         setInitialLoading(false);
         setRefreshing(false);
       }
     }
   }, []);
 
+  /** 追加下一页：滚动到底时按当前 tab 的筛选条件再取一页 */
+  const loadMore = useCallback(async (key: TabKey) => {
+    const cur = tabsRef.current[key];
+    if (!cur.hasMore || cur.loadingMore) return;
+
+    const reqId = ++reqIdRef.current[key];
+    setTabs((prev) => ({ ...prev, [key]: { ...prev[key], loadingMore: true } }));
+
+    try {
+      const page = await fetchBookmarkedWords({
+        start: cur.words.length,
+        limit: BOOKMARK_PAGE_SIZE,
+        types: TAB_TYPES[key],
+      });
+      if (reqId !== reqIdRef.current[key]) return;
+      setTabs((prev) => {
+        const t = prev[key];
+        const seen = new Set(t.words.map((w) => w.id));
+        const added = page.words.filter((w) => !seen.has(w.id));
+        return {
+          ...prev,
+          [key]: {
+            words: [...t.words, ...added],
+            total: page.total,
+            hasMore: page.hasMore,
+            loadingMore: false,
+          },
+        };
+      });
+    } catch (e: any) {
+      if (reqId !== reqIdRef.current[key]) return;
+      setTabs((prev) => ({ ...prev, [key]: { ...prev[key], loadingMore: false } }));
+      showToast('加载更多失败，请稍后重试');
+    }
+  }, []);
+
   // 首次进入 / 登录状态变化时重新拉取
   useEffect(() => {
-    load('initial');
-  }, [isLoggedIn, load]);
+    loadTabs('initial');
+  }, [isLoggedIn, loadTabs]);
 
   // 每次重新聚焦（如从其它页面收藏后切回）时静默刷新，首次聚焦跳过
   const focusedOnceRef = useRef(false);
@@ -394,13 +477,11 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
         return;
       }
       if (loadingRef.current) return;
-      load('refresh');
-    }, [load])
+      loadTabs('refresh');
+    }, [loadTabs])
   );
 
-  const handleRefresh = useCallback(() => load('refresh'), [load]);
-
-  const totalCount = pendingWords.length + masteredWords.length;
+  const handleRefresh = useCallback(() => loadTabs('refresh'), [loadTabs]);
 
   /** 会员限制的升级弹窗：一律走 ConfirmDialog */
   const showVipDialog = useCallback(
@@ -448,85 +529,82 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     [user, stats.masteredCount, showVipDialog]
   );
 
-  /** 进入复习模式：队列为整个生词本，焦点为点击的那个单词 */
+  /** 进入复习模式：队列为当前 tab 已加载的生词，焦点为点击的那个单词 */
   const openStudy = useCallback(
     (startWordId?: number) => {
-      const queue = [...pendingWords, ...masteredWords];
-      if (!queue.length) {
-        setDialog({ title: '提示', message: '生词本里还没有单词', showCancel: false });
+      const list = tabs[activeTab].words;
+      if (!list.length) {
+        setDialog({ title: '提示', message: '当前列表还没有单词', showCancel: false });
         return;
       }
-      const index = startWordId === undefined ? 0 : queue.findIndex((w) => w.id === startWordId);
+      const index = startWordId === undefined ? 0 : list.findIndex((w) => w.id === startWordId);
       navigation.navigate('BookmarkStudy', {
-        words: queue,
+        words: list,
         startIndex: index < 0 ? 0 : index,
-        total: queue.length,
+        total: tabs[activeTab].total,
+        // 复习页继续翻页时要沿用同一个筛选条件，否则会从「全部」里接着取
+        types: TAB_TYPES[activeTab],
       });
     },
-    [navigation, pendingWords, masteredWords]
+    [navigation, tabs, activeTab]
   );
 
   /**
-   * 标记单个单词为已记住：卡片原地变成标签，从点击位置飞进底部「已记住」区域。
-   * 先起飞再上报，点击后无等待感；飞行期间底部暂不渲染该标签，落地后淡入。
+   * 把「标记记住」的结果落到三个 tab 上：
+   *  - 学习中：直接移除（服务端不会再把它算进来）
+   *  - 已记住：插到队首
+   *  - 全部：留在原地把 type 改成 4
    */
-  const handleMarkMastered = async (word: Word, from: Rect) => {
-    const label = word.word;
+  const applyRemembered = useCallback((marked: Word[]) => {
+    if (!marked.length) return;
+    const ids = new Set(marked.map((w) => w.id));
+    const asRemembered = (w: Word): Word => ({ ...w, type: 4 });
 
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setTabs((prev) => {
+      const next = { ...prev };
+      for (const { key } of BOOKMARK_TABS) {
+        const t = prev[key];
+        if (key === 'learning') {
+          const removed = t.words.filter((w) => ids.has(w.id)).length;
+          next[key] = {
+            ...t,
+            words: t.words.filter((w) => !ids.has(w.id)),
+            total: Math.max(0, t.total - removed),
+          };
+        } else if (key === 'mastered') {
+          const added = marked.filter((w) => !t.words.some((x) => x.id === w.id));
+          next[key] = {
+            ...t,
+            words: [...added.map(asRemembered), ...t.words.filter((w) => !ids.has(w.id))],
+            total: t.total + added.length,
+          };
+        } else {
+          next[key] = {
+            ...t,
+            words: t.words.map((w) => (ids.has(w.id) ? asRemembered(w) : w)),
+          };
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  /** 标记单个单词为已记住：按钮实心化后卡片划走，随后按 tab 归属移动分组 */
+  const handleMarkMastered = async (word: Word) => {
     // 非会员达到免费额度时先拦截，引导升级会员后再继续
     if (await runVipGate()) {
-      pendingMarkRef.current = { type: 'single', word, from };
-      // 抛错走与上报失败相同的回滚：卡片淡回原位
+      pendingMarkRef.current = { type: 'single', word };
+      // 抛错走与上报失败相同的回滚：卡片滑回来
       throw new Error('VIP_GATE');
-    }
-
-    // 底部面板贴着屏幕底边，底边位置恒定，落地前用「底边 - 面板高度」推算出落点
-    if (from.width > 0 && from.height > 0) {
-      const [panel, origin] = await Promise.all([
-        measureInWindow(bottomRef),
-        measureInWindow(rootRef),
-      ]);
-      if (panel && origin) {
-        const cnCount = (label.match(/[\u4e00-\u9fa5]/g) || []).length;
-        const tagWidth = Math.min(
-          Math.max(cnCount * 14 + (label.length - cnCount) * 8 + 40, 56),
-          Math.max(panel.width - 28, 56)
-        );
-        const progress = new Animated.Value(0);
-        const item: FlyItem = {
-          id: word.id,
-          label,
-          from,
-          to: { x: panel.x + 14, y: panel.y + panel.height - BOTTOM_PANEL_HEIGHT + 36 },
-          origin,
-          tagWidth,
-          progress,
-        };
-        setFlying((prev) => [...prev, item]);
-
-        Animated.timing(progress, {
-          toValue: 1,
-          duration: FLY_DURATION,
-          easing: Easing.inOut(Easing.cubic),
-          useNativeDriver: false,
-        }).start(() => {
-          // 落地：底部区域淡入真正的标签
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-          setFlying((prev) => prev.filter((f) => f.id !== word.id));
-        });
-      }
     }
 
     try {
       // 生词本不属于当前卡组，必须显式带上它自己的卡组 id
       await recordReview(word.id, 'remembered', { packId: bookmarkPackId || undefined });
       playRememberedSound();
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      setPendingWords((prev) => prev.filter((w) => w.id !== word.id));
-      setMasteredWords((prev) => [word, ...prev.filter((w) => w.id !== word.id)]);
+      applyRemembered([word]);
     } catch (e: any) {
-      // 上报失败：撤掉飞行中的标签
-      setFlying((prev) => prev.filter((f) => f.id !== word.id));
       setDialog({
         title: '保存失败',
         message: e?.message || '标记已记住失败，请重试',
@@ -536,7 +614,7 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     }
   };
 
-  /** 全部记住：一次批量请求标记整个列表，成功后统一刷新界面 */
+  /** 全部记住：一次批量请求标记当前列表，成功后统一刷新界面 */
   const runMarkAll = async (targets: Word[]) => {
     if (!targets.length) return;
 
@@ -568,12 +646,8 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
         'remembered',
         { packId: bookmarkPackId || undefined }
       );
-      // 单词一次性移到底部「已记住」区域时的布局动画
-      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       setMarkAll({ running: false, total: 0 });
-      const markedIds = new Set(batch.map((w) => w.id));
-      setPendingWords((prev) => prev.filter((w) => !markedIds.has(w.id)));
-      setMasteredWords((prev) => [...batch, ...prev.filter((w) => !markedIds.has(w.id))]);
+      applyRemembered(batch);
       showToast(`已把 ${batch.length} 个单词标记为已记住`);
     } catch (e: any) {
       setMarkAll({ running: false, total: 0 });
@@ -594,7 +668,8 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
   /** 点击「全部记住」：先用 ConfirmDialog 二次确认，确认后再发起批量请求 */
   const handleMarkAll = () => {
     if (markAll.running) return;
-    if (!pendingWords.length) {
+    const targets = words.filter((w) => w.type !== 4);
+    if (!targets.length) {
       setDialog({
         title: '提示',
         message: '没有未记住的单词了',
@@ -604,10 +679,10 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     }
     setDialog({
       title: '全部记住',
-      message: `将把生词本里 ${pendingWords.length} 个未记住的单词标记为已记住，是否继续？`,
+      message: `将把当前列表 ${targets.length} 个未记住的单词标记为已记住，是否继续？`,
       onConfirm: () => {
         setDialog(null);
-        runMarkAll(pendingWords);
+        runMarkAll(targets);
       },
     });
   };
@@ -646,7 +721,7 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
         showToast('会员已开通，继续标记');
         if (pending.type === 'single') {
           try {
-            await handleMarkMasteredRef.current(pending.word, pending.from);
+            await handleMarkMasteredRef.current(pending.word);
           } catch {
             // 继续失败时卡片已回滚，不再额外弹窗
           }
@@ -658,187 +733,173 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     }, [user, stats.masteredCount])
   );
 
-  /** 正在飞行的单词不从底部标签区渲染，避免和飞行中的标签重复 */
-  const flyingIds = useMemo(() => new Set(flying.map((f) => f.id)), [flying]);
-  const visibleMastered = useMemo(
-    () => masteredWords.filter((w) => !flyingIds.has(w.id)),
-    [masteredWords, flyingIds]
-  );
-
+  const totalCount = tabs.all.total;
+  const rememberedCount = tabs.mastered.total;
   const showEmptyState = !initialLoading && !errorMsg && !needLogin && totalCount === 0;
+
+  /** 当前 tab 的空态文案 */
+  const emptyState = useMemo(() => {
+    if (activeTab === 'mastered') {
+      return {
+        icon: 'checkmark-done-outline',
+        color: Colors.success,
+        title: '还没有记住的单词',
+        text: '在「学习中」点单词右侧的对勾，记住的单词会出现在这里',
+      };
+    }
+    if (activeTab === 'all') {
+      return {
+        icon: 'bookmark-outline',
+        color: Colors.border,
+        title: '生词本是空的',
+        text: '在背词或单词列表里点击书签图标，随时将难记生词收藏到这里',
+      };
+    }
+    return {
+      icon: 'checkmark-done-circle',
+      color: Colors.success,
+      title: '全部记住啦',
+      text: totalCount ? '生词本里的单词都已标记为已记住' : '还没有收藏任何单词',
+    };
+  }, [activeTab, totalCount]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.root} ref={rootRef}>
-        <Header
-          title="生词本"
-          subtitle={
-            initialLoading && totalCount === 0
-              ? '正在加载...'
-              : `共 ${totalCount} 词 · 已记住 ${masteredWords.length}`
-          }
-          rightAction={{
-            icon: 'play-circle',
-            onPress: () => openStudy(),
-          }}
-        />
+      <Header
+        title="生词本"
+        subtitle={
+          initialLoading && totalCount === 0
+            ? '正在加载...'
+            : `共 ${totalCount} 词 · 已记住 ${rememberedCount}`
+        }
+        rightAction={{
+          icon: 'play-circle',
+          onPress: () => openStudy(),
+        }}
+      />
 
-        {/* 顶部操作条：左侧为列表分组标签，右侧显示/隐藏词义 */}
-        <View style={styles.topBar}>
-          <View style={styles.segmentWrap}>
-            <View style={[styles.segment, styles.segmentActive]}>
-              <Text style={[styles.segmentText, styles.segmentTextActive]}>列表</Text>
-            </View>
-          </View>
-
-          <View style={styles.topActions}>
-            <TouchableOpacity
-              style={[styles.ghostBtn, showDetail && styles.ghostBtnActive]}
-              onPress={() => setShowDetail((v) => !v)}
-              activeOpacity={0.8}
-            >
-              <Ionicons
-                name={showDetail ? 'eye-off-outline' : 'eye-outline'}
-                size={15}
-                color={showDetail ? Colors.primary : Colors.textTertiary}
-              />
-              <Text style={[styles.ghostBtnText, showDetail && styles.ghostBtnTextActive]}>
-                词义
-              </Text>
-            </TouchableOpacity>
-            {/* 「全部记住」入口暂时下掉，批量标记的逻辑仍保留在 runMarkAll */}
-          </View>
+      {/* 顶部操作条：左侧为分组 tab，右侧显示/隐藏词义 */}
+      <View style={styles.topBar}>
+        <View style={styles.segmentWrap}>
+          {BOOKMARK_TABS.map((t) => {
+            const active = t.key === activeTab;
+            const count = tabs[t.key].total;
+            return (
+              <TouchableOpacity
+                key={t.key}
+                style={[styles.segment, active && styles.segmentActive]}
+                onPress={() => setActiveTab(t.key)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                  {t.label}
+                  {count ? ` ${count}` : ''}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
-        {initialLoading && totalCount === 0 ? (
-          <View style={styles.centerWrap}>
-            <ActivityIndicator size="large" color={Colors.primary} />
-            <Text style={styles.centerText}>正在加载生词本...</Text>
-          </View>
-        ) : null}
-
-        {!initialLoading && needLogin ? (
-          <View style={styles.centerWrap}>
-            <Ionicons name="person-circle-outline" size={64} color={Colors.border} />
-            <Text style={styles.emptyTitle}>登录后同步生词本</Text>
-            <Text style={styles.emptyDesc}>{errorMsg}</Text>
-            <TouchableOpacity
-              style={styles.loginBtn}
-              onPress={() => navigation.navigate('Login')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.loginBtnText}>去登录</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-
-        {!initialLoading && !needLogin && !!errorMsg ? (
-          <View style={styles.centerWrap}>
-            <Ionicons name="cloud-offline-outline" size={64} color={Colors.border} />
-            <Text style={styles.emptyTitle}>加载失败</Text>
-            <Text style={styles.emptyDesc}>{errorMsg}</Text>
-            <TouchableOpacity
-              style={styles.loginBtn}
-              onPress={() => load('initial')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.loginBtnText}>重新加载</Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
-
-        {!initialLoading && !needLogin && !errorMsg ? (
-          <>
-            {/* 中部：未记住的单词列表 */}
-            <View style={styles.middleWrap}>
-              <FlatList
-                data={pendingWords}
-                keyExtractor={(item) => String(item.id)}
-                renderItem={({ item }) => (
-                  <WordRow
-                    word={item}
-                    showDetail={showDetail}
-                    accent={state.accent}
-                    onPress={() => openStudy(item.id)}
-                    onMastered={handleMarkMastered}
-                  />
-                )}
-                contentContainerStyle={styles.listContent}
-                showsVerticalScrollIndicator={false}
-                refreshControl={
-                  <RefreshControl
-                    refreshing={refreshing}
-                    onRefresh={handleRefresh}
-                    tintColor={Colors.primary}
-                  />
-                }
-                ListEmptyComponent={
-                  showEmptyState ? (
-                    <View style={styles.emptyWrap}>
-                      <Ionicons name="bookmark-outline" size={56} color={Colors.border} />
-                      <Text style={styles.emptyTitle}>生词本是空的</Text>
-                      <Text style={styles.emptyText}>
-                        在背词或单词列表里点击书签图标，随时将难记生词收藏到这里
-                      </Text>
-                    </View>
-                  ) : (
-                    <View style={styles.emptyWrap}>
-                      <Ionicons name="checkmark-done-circle" size={56} color={Colors.success} />
-                      <Text style={styles.emptyTitle}>全部记住啦</Text>
-                      <Text style={styles.emptyText}>生词本里的单词都已标记为已记住</Text>
-                    </View>
-                  )
-                }
-              />
-            </View>
-
-            {/* 底部：已记住的单词标签 */}
-            <View
-              ref={bottomRef}
-              style={[
-                styles.bottomPanel,
-                masteredWords.length ? { height: BOTTOM_PANEL_HEIGHT } : null,
-              ]}
-            >
-              <View style={styles.bottomHeader}>
-                <Ionicons name="checkmark-done" size={14} color={Colors.success} />
-                <Text style={styles.bottomTitle}>已记住 {masteredWords.length}</Text>
-              </View>
-
-              {visibleMastered.length ? (
-                <ScrollView
-                  style={styles.tagScroll}
-                  contentContainerStyle={styles.tagWrap}
-                  showsVerticalScrollIndicator={false}
-                >
-                  {visibleMastered.map((w) => (
-                    <TouchableOpacity
-                      key={w.id}
-                      style={styles.tag}
-                      onPress={() => openStudy(w.id)}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="checkmark" size={11} color={Colors.success} />
-                      <Text style={styles.tagText} numberOfLines={1}>
-                        {w.word}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              ) : (
-                <Text style={styles.bottomEmpty}>
-                  点单词右侧的对勾，记住的单词会收进这里
-                </Text>
-              )}
-            </View>
-          </>
-        ) : null}
-
-        {/* 飞行动画层 */}
-        {flying.map((item) => (
-          <FlyTag key={item.id} item={item} />
-        ))}
+        <View style={styles.topActions}>
+          <TouchableOpacity
+            style={[styles.ghostBtn, showDetail && styles.ghostBtnActive]}
+            onPress={() => setShowDetail((v) => !v)}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={showDetail ? 'eye-off-outline' : 'eye-outline'}
+              size={15}
+              color={showDetail ? Colors.primary : Colors.textTertiary}
+            />
+            <Text style={[styles.ghostBtnText, showDetail && styles.ghostBtnTextActive]}>词义</Text>
+          </TouchableOpacity>
+          {/* 「全部记住」入口暂时下掉，批量标记的逻辑仍保留在 handleMarkAll */}
+        </View>
       </View>
+
+      {initialLoading && totalCount === 0 ? (
+        <View style={styles.centerWrap}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={styles.centerText}>正在加载生词本...</Text>
+        </View>
+      ) : null}
+
+      {!initialLoading && needLogin ? (
+        <View style={styles.centerWrap}>
+          <Ionicons name="person-circle-outline" size={64} color={Colors.border} />
+          <Text style={styles.emptyTitle}>登录后同步生词本</Text>
+          <Text style={styles.emptyDesc}>{errorMsg}</Text>
+          <TouchableOpacity
+            style={styles.loginBtn}
+            onPress={() => navigation.navigate('Login')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.loginBtnText}>去登录</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {!initialLoading && !needLogin && !!errorMsg ? (
+        <View style={styles.centerWrap}>
+          <Ionicons name="cloud-offline-outline" size={64} color={Colors.border} />
+          <Text style={styles.emptyTitle}>加载失败</Text>
+          <Text style={styles.emptyDesc}>{errorMsg}</Text>
+          <TouchableOpacity
+            style={styles.loginBtn}
+            onPress={() => loadTabs('initial')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.loginBtnText}>重新加载</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {!initialLoading && !needLogin && !errorMsg ? (
+        <FlatList
+          data={words}
+          keyExtractor={(item) => String(item.id)}
+          style={styles.list}
+          renderItem={({ item }) => (
+            <WordRow
+              word={item}
+              mastered={item.type === 4 || activeTab === 'mastered'}
+              showDetail={showDetail}
+              accent={state.accent}
+              onPress={() => openStudy(item.id)}
+              onMastered={handleMarkMastered}
+            />
+          )}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={Colors.primary}
+            />
+          }
+          onEndReached={() => loadMore(activeTab)}
+          onEndReachedThreshold={0.4}
+          ListEmptyComponent={
+            showEmptyState || !words.length ? (
+              <View style={styles.emptyWrap}>
+                <Ionicons name={emptyState.icon as any} size={56} color={emptyState.color} />
+                <Text style={styles.emptyTitle}>{emptyState.title}</Text>
+                <Text style={styles.emptyText}>{emptyState.text}</Text>
+              </View>
+            ) : null
+          }
+          ListFooterComponent={
+            activeState.loadingMore ? (
+              <View style={styles.footerLoading}>
+                <ActivityIndicator size="small" color={Colors.primary} />
+              </View>
+            ) : words.length && !activeState.hasMore ? (
+              <Text style={styles.footerText}>没有更多单词了</Text>
+            ) : null
+          }
+        />
+      ) : null}
 
       <ConfirmDialog
         visible={dialog !== null}
@@ -859,9 +920,6 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: Colors.background,
-  },
-  root: {
-    flex: 1,
   },
   topBar: {
     flexDirection: 'row',
@@ -928,29 +986,12 @@ const styles = StyleSheet.create({
   ghostBtnTextActive: {
     color: Colors.primary,
   },
-  primaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 12,
-    backgroundColor: Colors.primary,
-  },
-  primaryBtnDisabled: {
-    opacity: 0.7,
-  },
-  primaryBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  middleWrap: {
+  list: {
     flex: 1,
   },
   listContent: {
     paddingTop: 4,
-    paddingBottom: 12,
+    paddingBottom: 20,
   },
   card: {
     backgroundColor: Colors.card,
@@ -1012,9 +1053,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
   },
-  checkBtn: {
-    backgroundColor: Colors.success + '15',
-    borderColor: Colors.success + '55',
+  doneBtn: {
+    backgroundColor: Colors.success,
+    borderColor: Colors.success,
+  },
+  checkIconStack: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   detailBox: {
     marginTop: 10,
@@ -1034,64 +1081,15 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     lineHeight: 18,
   },
-  bottomPanel: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    backgroundColor: Colors.card,
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 8,
-  },
-  bottomHeader: {
-    flexDirection: 'row',
+  footerLoading: {
+    paddingVertical: 16,
     alignItems: 'center',
-    gap: 5,
-    marginBottom: 8,
   },
-  bottomTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.textSecondary,
-  },
-  tagScroll: {
-    flex: 1,
-  },
-  tagWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingBottom: 6,
-  },
-  tag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    height: TAG_HEIGHT,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: Colors.success + '14',
-    borderWidth: 1,
-    borderColor: Colors.success + '33',
-    maxWidth: '100%',
-  },
-  tagText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.success,
-    flexShrink: 1,
-  },
-  bottomEmpty: {
+  footerText: {
+    paddingVertical: 16,
+    textAlign: 'center',
     fontSize: 12,
     color: Colors.textMuted,
-  },
-  flyTag: {
-    position: 'absolute',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    borderWidth: 1,
-    overflow: 'hidden',
   },
   centerWrap: {
     alignItems: 'center',

@@ -271,6 +271,25 @@ export const BookSelectScreen: React.FC<BookSelectScreenProps> = ({ navigation }
               </View>
             );
           }}
+          // 有数据也一直展示入口：方便直接再去市场补卡组，不用先删空
+          ListFooterComponent={
+            packs.length > 0 ? (
+              <TouchableOpacity
+                style={styles.addMoreBtn}
+                onPress={() => navigation.navigate('Market', { firstSetup: false })}
+                activeOpacity={0.7}
+              >
+                <View style={styles.addMoreIconWrap}>
+                  <Ionicons name="add" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.addMoreTextWrap}>
+                  <Text style={styles.addMoreTitle}>去卡组市场添加更多卡组</Text>
+                  <Text style={styles.addMoreHint}>市场里有分类单词组块，可继续扩充我的卡组</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+            ) : null
+          }
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
               <Ionicons name="library-outline" size={48} color={Colors.border} />
@@ -519,5 +538,40 @@ const styles = StyleSheet.create({
   secondaryText: {
     color: Colors.textMuted,
     fontSize: 13,
+  },
+  // 列表底部的「去卡组市场」入口（空态时在 ListEmptyComponent 里另有一枚）
+  addMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: Colors.borderStrong,
+    backgroundColor: Colors.backgroundAlt,
+  },
+  addMoreIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  addMoreTextWrap: {
+    flex: 1,
+  },
+  addMoreTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  addMoreHint: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginTop: 2,
   },
 });

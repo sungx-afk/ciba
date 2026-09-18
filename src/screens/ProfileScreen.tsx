@@ -27,6 +27,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
   const user = authUser || progressUser;
   const isLoggedIn = authLoggedIn || progressLoggedIn;
+  /** 用户资料里的 vip 字段为 1 表示付费会员 */
+  const isVip = Number(user?.vip) === 1;
 
   const [logoutVisible, setLogoutVisible] = useState(false);
   /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
@@ -54,10 +56,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const maskMobile = (m?: string) => {
     if (!m) return '';
     return m.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2');
-  };
-
-  const handleGoalChange = (newGoal: number) => {
-    updateSettings({ dailyGoal: newGoal });
   };
 
   const handleAccentChange = (accent: 'en-US' | 'en-GB') => {
@@ -147,8 +145,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         {/* 用户概览卡片 */}
         <View style={styles.userCard}>
-          <View style={styles.avatarCircle}>
-            <Ionicons name={isLoggedIn ? 'person' : 'log-in-outline'} size={32} color={Colors.primary} />
+          <View style={styles.avatarWrap}>
+            <View style={[styles.avatarCircle, isVip && styles.avatarCircleVip]}>
+              <Ionicons
+                name={isLoggedIn ? 'person' : 'log-in-outline'}
+                size={32}
+                color={isVip ? Colors.gold : Colors.primary}
+              />
+            </View>
+            {/* 会员身份：头像右下角挂一枚金色小钻石，一眼可辨 */}
+            {isVip ? (
+              <View style={styles.avatarVipBadge}>
+                <Ionicons name="diamond" size={10} color="#FFFFFF" />
+              </View>
+            ) : null}
           </View>
           <View style={styles.userInfo}>
             <View style={styles.userNameRow}>
@@ -157,12 +167,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               </Text>
               {isLoggedIn && (
                 <TouchableOpacity
-                  style={styles.vipButton}
+                  style={[styles.vipButton, isVip ? styles.vipButtonVip : styles.vipButtonUpgrade]}
                   onPress={() => navigation.navigate('Purchase')}
-                  activeOpacity={0.7}
+                  activeOpacity={0.75}
                 >
-                  <Ionicons name="diamond-outline" size={12} color={Colors.primary} />
-                  <Text style={styles.vipButtonText}>{user?.vip ? 'VIP 会员' : '升级会员'}</Text>
+                  <Ionicons
+                    name={isVip ? 'diamond' : 'diamond-outline'}
+                    size={12}
+                    color={isVip ? '#FFFFFF' : Colors.gold}
+                  />
+                  <Text style={[styles.vipButtonText, isVip && styles.vipButtonTextVip]}>
+                    {isVip ? 'VIP 会员' : '升级会员'}
+                  </Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -217,28 +233,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <Text style={styles.statNum}>{stats.masteredCount}</Text>
               <Text style={styles.statLbl}>已掌握单词</Text>
             </View>
-          </View>
-        </View>
-
-        {/* 每日学习目标 */}
-        <View style={styles.sectionCard}>
-          <Text style={styles.cardHeaderTitle}>每日新词目标</Text>
-          <View style={styles.goalRow}>
-            {[10, 20, 30, 50].map((goal) => {
-              const isSelected = state.dailyGoal === goal;
-              return (
-                <TouchableOpacity
-                  key={goal}
-                  style={[styles.goalChip, isSelected && styles.goalChipActive]}
-                  onPress={() => handleGoalChange(goal)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[styles.goalChipText, isSelected && styles.goalChipTextActive]}>
-                    {goal} 词
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
           </View>
         </View>
 
@@ -368,6 +362,11 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     marginBottom: 16,
   },
+  avatarWrap: {
+    width: 52,
+    height: 52,
+    marginRight: 14,
+  },
   avatarCircle: {
     width: 52,
     height: 52,
@@ -375,7 +374,30 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 14,
+  },
+  // 会员头像：金环 + 金色底，与普通用户区分开
+  avatarCircleVip: {
+    backgroundColor: Colors.gold + '1A',
+    borderWidth: 2,
+    borderColor: Colors.gold,
+  },
+  avatarVipBadge: {
+    position: 'absolute',
+    right: 11,
+    bottom: -2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: Colors.gold,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: Colors.card,
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.5,
+    shadowRadius: 4,
+    elevation: 4,
   },
   userInfo: {
     flex: 1,
@@ -394,18 +416,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginLeft: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 3,
+  },
+  // 已是会员：金色实心 + 外发光，身份展示更醒目
+  vipButtonVip: {
+    backgroundColor: Colors.gold,
+    shadowColor: Colors.gold,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  // 未开通：金色描边浅底，作为升级入口
+  vipButtonUpgrade: {
     borderWidth: 1,
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryLight,
+    borderColor: Colors.gold + '66',
+    backgroundColor: Colors.gold + '14',
   },
   vipButtonText: {
     fontSize: 11,
     fontWeight: '700',
-    color: Colors.primary,
-    marginLeft: 2,
+    color: Colors.gold,
+  },
+  vipButtonTextVip: {
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
   },
   userSub: {
     fontSize: 12,
@@ -470,28 +508,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     marginBottom: 16,
-  },
-  goalRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  goalChip: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: Colors.divider,
-    alignItems: 'center',
-  },
-  goalChipActive: {
-    backgroundColor: Colors.primary,
-  },
-  goalChipText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.textSecondary,
-  },
-  goalChipTextActive: {
-    color: '#FFFFFF',
   },
   settingRow: {
     flexDirection: 'row',

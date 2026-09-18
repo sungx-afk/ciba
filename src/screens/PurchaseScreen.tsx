@@ -64,6 +64,29 @@ function formatDate(text?: string): string {
   return date.length >= 10 ? date.slice(0, 10) : date;
 }
 
+/**
+ * 内购错误文案：拼成「[错误码] 原始信息」。
+ * 失败原因大多在系统层（Apple ID 状态、购买限制、交易队列等），
+ * 只显示 localizedDescription 无法定位，带上 code（E_UNKNOWN / E_USER_CANCELLED 等）
+ * 才能区分是系统拒绝还是参数问题。
+ */
+function describeIapError(e: any, fallback: string): string {
+  const code = e?.code ? String(e.code) : '';
+  const message = e?.message || fallback;
+  return code ? `[${code}] ${message}` : message;
+}
+
+/**
+ * 服务端业务错误文案：拼成「（错误码 X）原始信息」。
+ * /pay/ios/verify 失败时后端在 msg 里给出具体原因（核销失败、参数缺失等），
+ * 带上 result 才能区分是网络问题还是服务端拒绝了这次核销。
+ */
+function describeServerError(e: any, fallback: string): string {
+  const result = e?.result !== undefined && e?.result !== null ? String(e.result) : '';
+  const message = e?.message || fallback;
+  return result ? `（错误码 ${result}）${message}` : message;
+}
+
 export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) => {
   const { user, isLoggedIn, refreshUserInfo } = useAuth();
 
@@ -176,12 +199,43 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
           tag_id: plan?.tagId,
           app_account_token: appAccountToken,
         });
+
+        /**
+         * 二次校验：核销接口返回成功 ≠ 会员真的开通了。
+         * 服务端对「核销失败」也可能返回 result: 0/1（见 PayApi.verifyAppleReceipt 注释），
+         * 所以要按会员状态再确认一次，没开通就必须按失败处理。
+         */
+        let status: VipStatus | null = null;
+        let statusError: any = null;
+        try {
+          status = await PayApi.getVipStatus();
+        } catch (e) {
+          // 状态查询是辅助确认，查不到时按服务端返回的字段兜底，不能直接判失败
+          statusError = e;
+        }
+
+        if (status && !status.isVip) {
+          console.warn('[IAP] 核销返回成功但会员未开通', JSON.stringify(res));
+          return {
+            ok: false,
+            message: res?.msg || '服务端未能开通会员，请检查网络或稍后重试',
+          };
+        }
+
         await finishPurchase(purchase);
         await refreshUserInfo();
-        await refreshVip();
-        return { ok: true, endDate: res?.end_date };
+        if (status) {
+          setVip(status);
+        } else {
+          void refreshVip();
+        }
+        if (statusError) console.warn('[IAP] 会员状态查询失败', statusError);
+        return { ok: true, endDate: status?.endDate || res?.end_date };
       } catch (e: any) {
-        return { ok: false, message: e?.message || '票据校验失败，请稍后重试' };
+        return {
+          ok: false,
+          message: describeServerError(e, '票据校验失败，请稍后重试'),
+        };
       }
     },
     [appAccountToken, refreshUserInfo, refreshVip]
@@ -238,17 +292,24 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
           setProductsError('暂未获取到商品价格，请确认 App Store 订阅已生效');
         }
 
-        // 补单：上次支付成功但服务端未确认的订单
+        // 补单：上次支付成功但服务端未确认的订单。
+        // 它底层是 SKPaymentQueue.restoreCompletedTransactions()，
+        // 设备 Apple ID 状态异常（未登录 / 正式与沙箱账号错配 / 开启购买限制）时会直接失败，
+        // 但这不影响本页正常发起购买，所以只记日志，不提示用户。
         if (isLoggedInRef.current && !vipRef.current?.isVip) {
-          const unfinished = await fetchRestoreablePurchases();
-          if (disposed) return;
-          for (const item of unfinished) {
-            const result = await verifyRef.current(item, true);
-            if (result.ok) break;
+          try {
+            const unfinished = await fetchRestoreablePurchases();
+            if (disposed) return;
+            for (const item of unfinished) {
+              const result = await verifyRef.current(item, true);
+              if (result.ok) break;
+            }
+          } catch (e: any) {
+            console.warn('[IAP] 补单失败（不影响购买）', e?.code, e?.message);
           }
         }
       } catch (e: any) {
-        if (!disposed) setProductsError(e?.message || '无法连接 App Store，请稍后重试');
+        if (!disposed) setProductsError(describeIapError(e, '无法连接 App Store，请稍后重试'));
       } finally {
         if (!disposed) setLoadingProducts(false);
       }
@@ -313,7 +374,7 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
     } catch (e: any) {
       // 用户主动取消不打扰
       if (e?.userCancelled || isUserCancelled(e)) return;
-      showNotice('购买未完成', e?.message || '请稍后重试');
+      showNotice('购买未完成', describeIapError(e, '请稍后重试'));
     } finally {
       setBuying(false);
     }
@@ -336,23 +397,27 @@ export const PurchaseScreen: React.FC<PurchaseScreenProps> = ({ navigation }) =>
         showNotice('没有可恢复的订单', '当前 Apple ID 下未查询到已购买的会员订单');
         return;
       }
-      // 取最近的一笔去服务端校验
+      // 从最近的一笔开始逐笔核销，全部失败时把服务端的错误信息提示出来
       const sorted = [...purchases].sort(
         (a, b) => (b.transactionDate || 0) - (a.transactionDate || 0)
       );
-      const result = await verifyPurchase(sorted[0], true);
-      if (result.ok) {
-        showNotice(
-          '恢复成功',
-          result.endDate
-            ? `会员有效期至 ${formatDate(result.endDate)}`
-            : '会员权益已恢复到当前账号'
-        );
-      } else {
-        showNotice('恢复失败', result.message || '未能恢复购买，请检查网络或 Apple ID');
+      let lastError = '未能恢复购买，请检查网络或 Apple ID';
+      for (const item of sorted) {
+        const result = await verifyPurchase(item, true);
+        if (result.ok) {
+          showNotice(
+            '恢复成功',
+            result.endDate
+              ? `会员有效期至 ${formatDate(result.endDate)}`
+              : '会员权益已恢复到当前账号'
+          );
+          return;
+        }
+        if (result.message) lastError = result.message;
       }
+      showNotice('恢复失败', lastError);
     } catch (e: any) {
-      showNotice('恢复失败', e?.message || '未能恢复购买，请检查网络或 Apple ID');
+      showNotice('恢复失败', describeIapError(e, '未能恢复购买，请检查网络或 Apple ID'));
     } finally {
       setRestoring(false);
     }
