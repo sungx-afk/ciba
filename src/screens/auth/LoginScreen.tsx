@@ -24,6 +24,13 @@ import { useAuth } from '../../context/AuthContext';
 
 type LoginTab = 'mobile' | 'password';
 
+/**
+ * 临时开关：第三方登录（微信 / Apple）在 UI 上先隐藏。
+ * 只影响展示，登录逻辑与授权回调监听全部保留，
+ * 需要重新露出按钮时把这个常量改回 true 即可。
+ */
+const SHOW_THIRD_PARTY_LOGIN = false;
+
 export const LoginScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { login } = useAuth();
@@ -564,38 +571,42 @@ export const LoginScreen: React.FC = () => {
 
           {/* 下半部托底群组：第三方社交登录自然贴靠底部 */}
           <View style={styles.bottomGroup}>
-            <View style={styles.socialDividerRow}>
-              <View style={styles.socialLine} />
-              <Text style={styles.socialDividerText}>第三方登录</Text>
-              <View style={styles.socialLine} />
-            </View>
+            {SHOW_THIRD_PARTY_LOGIN ? (
+              <>
+                <View style={styles.socialDividerRow}>
+                  <View style={styles.socialLine} />
+                  <Text style={styles.socialDividerText}>第三方登录</Text>
+                  <View style={styles.socialLine} />
+                </View>
 
-            <View style={styles.socialBtnGroup}>
-              {/* 微信登录 */}
-              <TouchableOpacity
-                style={[styles.socialCircleBtn, styles.wechatBg]}
-                onPress={handleWechatLogin}
-                activeOpacity={0.8}
-                disabled={socialLoading}
-              >
-                {socialLoading ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Ionicons name="logo-wechat" size={25} color="#FFFFFF" />
-                )}
-              </TouchableOpacity>
+                <View style={styles.socialBtnGroup}>
+                  {/* 微信登录 */}
+                  <TouchableOpacity
+                    style={[styles.socialCircleBtn, styles.wechatBg]}
+                    onPress={handleWechatLogin}
+                    activeOpacity={0.8}
+                    disabled={socialLoading}
+                  >
+                    {socialLoading ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Ionicons name="logo-wechat" size={25} color="#FFFFFF" />
+                    )}
+                  </TouchableOpacity>
 
-              {/* Apple 登录 (仅在 iOS 系统显示) */}
-              {Platform.OS === 'ios' && (
-                <TouchableOpacity
-                  style={[styles.socialCircleBtn, styles.appleBg]}
-                  onPress={handleAppleLogin}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="logo-apple" size={24} color="#FFFFFF" />
-                </TouchableOpacity>
-              )}
-            </View>
+                  {/* Apple 登录 (仅在 iOS 系统显示) */}
+                  {Platform.OS === 'ios' && (
+                    <TouchableOpacity
+                      style={[styles.socialCircleBtn, styles.appleBg]}
+                      onPress={handleAppleLogin}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="logo-apple" size={24} color="#FFFFFF" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </>
+            ) : null}
 
             {/* 底部保障与安心说明 */}
             <Text style={styles.bottomSecurityText}>
