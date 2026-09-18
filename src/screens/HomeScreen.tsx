@@ -42,6 +42,11 @@ const LEARNING_REMEMBER_TYPES = [0, 1];
 const REMEMBERED_REMEMBER_TYPES = [2];
 /** 新安装卡组同步分类卡组时的数量上限，达到即视为同步完成，不再继续轮询 */
 const SUB_PACK_SYNC_LIMIT = 20;
+/**
+ * 已确认没有更多数据时，再次触底的探测间隔。
+ * 服务端 total 可能滞后，留一个间隔让用户可以触底重试，同时避免连续发请求。
+ */
+const SUB_PROBE_INTERVAL = 3000;
 
 interface HomeScreenProps {
   navigation: any;
@@ -171,6 +176,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       subPackCount: subPacks.length,
     };
   }, [selectedTop, activeSub, subPacks.length]);
+
+  // 当前子卡组列表的镜像：请求下一页时要拿它去重，也是判断是否还有新增的依据
+  const subPacksRef = useRef<RemotePack[]>([]);
+  useEffect(() => {
+    subPacksRef.current = subPacks;
+  }, [subPacks]);
+  /**
+   * 上一次翻页是否已经确认「没有更多」。
+   * 服务端的 total 可能滞后于真实数据（新安装的卡组还在后台复制子卡组，
+   * 同步轮询到 SUB_PACK_SYNC_LIMIT 就结束了），所以不能只拿 total 当终点，
+   * 到底部时还会再翻一次验证；只有真的翻出 0 条新增才把它置 true。
+   * 置 true 后仍允许按 PROBE_INTERVAL 节流地重试，服务端补上数据能自动接上。
+   */
+  const noMoreSubsRef = useRef(false);
+  /** 上一次「到底部探测」的时间戳，防止用户反复触底时疯狂发请求 */
+  const lastProbeAtRef = useRef(0);
 
   // 「未记住」分类卡组的镜像：刷新后要拿它和服务端新数据比对，判断本地增量是否被消化
   const learningPacksRef = useRef<RemotePack[]>([]);
@@ -314,7 +335,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         // 重新拉取「未记住」第一页后对齐本地「已掌握」增量；
         // 切到「已记住」tab 不能清，否则今日学习里的已掌握数字会回落
         if (start === 0 && rememberTypes.includes(0)) reconcileMasteredDelta(packs);
-        setSubPacks((prev) => (start === 0 ? packs : mergePacks(prev, packs)));
+        if (start === 0) {
+          // 重取第一页 = 重新开始的这份列表，推翻上一次「没有更多」的结论
+          noMoreSubsRef.current = false;
+          setSubPacks(packs);
+        } else {
+          // 这一页有没有带来新增才是真正的终点：服务端返回的 total 可能偏小，
+          // 也可能返回已在列表里的重复数据，两者都不能当作「没有了」
+          const seen = new Set(subPacksRef.current.map((p) => Number(p.id)));
+          noMoreSubsRef.current = packs.every((p) => seen.has(Number(p.id)));
+          setSubPacks((prev) => mergePacks(prev, packs));
+        }
         setSubTotal(total);
         setSubPacksParentId(parentId);
         // 未记住的数据另外留一份给今日学习看板，切换 tab 时它保持不变
@@ -428,6 +459,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         setSubTotal(total);
         setSubPacksParentId(parentId);
         setPreparedCount(total);
+        // 这里拿到的可能只是服务端同步到一半的快照，
+        // 剩下的交给触底加载继续补，所以不能标记成「没有更多」
+        noMoreSubsRef.current = false;
 
         // 数量已达上限：服务端已基本复制完成，直接结束同步，不再继续触发
         if (total >= SUB_PACK_SYNC_LIMIT) return true;
@@ -538,6 +572,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
     setSubPacks([]);
     setSubTotal(0);
+    // 换了父卡组 / tab 就是一份全新列表，之前的「没有更多」结论作废
+    noMoreSubsRef.current = false;
     if (parentChanged) {
       setSubPacksParentId(null);
       setActiveSub(null);
@@ -603,9 +639,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     }
   }, [loadTopPacks, loadSubPacks, refreshTabCounts, selectedTop, currentRememberTypes]);
 
+  /**
+   * 触底加载：只在「确实翻不到新数据」时才停。
+   * 服务端给的 total 可能小于真实数量（新安装的卡组后台还在复制子卡组，
+   * 轮询到 SUB_PACK_SYNC_LIMIT 就结束了），所以只要还没被这一页结果否掉，
+   * 触底就会再按当前长度往后翻一页验证，翻出数据就继续接上。
+   */
   const handleLoadMore = () => {
     if (loadingSubs || loadingPacks || !selectedTop) return;
-    if (subPacks.length === 0 || subPacks.length >= subTotal) return;
+    if (subPacks.length === 0) return; // 首屏第一页由列表自己拉，这里不重复请求
+
+    const now = Date.now();
+    // 上一次确实没翻到数据时节流重试，避免用户反复触底时连续发请求
+    if (noMoreSubsRef.current && now - lastProbeAtRef.current < SUB_PROBE_INTERVAL) return;
+    lastProbeAtRef.current = now;
+
     loadSubPacks(selectedTop.id, subPacks.length, SUB_PAGE_SIZE, false, currentRememberTypes);
   };
 
