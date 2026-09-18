@@ -94,7 +94,8 @@ export const CountdownButton: React.FC<CountdownButtonProps> = ({
 
 const styles = StyleSheet.create({
   button: {
-    paddingHorizontal: 12,
+    flexShrink: 0,
+    paddingHorizontal: 10,
     height: 32,
     borderRadius: 16,
     backgroundColor: '#EDF4F6',

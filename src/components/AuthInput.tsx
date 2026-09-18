@@ -171,6 +171,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
+    minWidth: 0,
     fontSize: 16,
     color: '#1E3A4C',
     height: '100%',
@@ -183,6 +184,7 @@ const styles = StyleSheet.create({
   },
   rightActionSlot: {
     marginLeft: 8,
+    flexShrink: 0,
   },
   errorText: {
     fontSize: 12,
