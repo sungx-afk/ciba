@@ -14,6 +14,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useProgress } from '../storage/progressStore';
 import { useAuth } from '../context/AuthContext';
 import { Word, WordSentenceItem } from '../types';
@@ -77,6 +78,12 @@ const DEFAULT_STUDY_SETTING: StudySetting = {
   play_answer_voice: 0,
 };
 
+/** 底部四档操作栏高度：浮动「已记住」要按它 + 底部安全区往上让位，否则真机被挡住 */
+const BOTTOM_BAR_HEIGHT = 66;
+
+/** 浮动「已记住」与操作栏之间的间距 */
+const FLOAT_REMEMBER_GAP = 12;
+
 /** 底部档位按钮（id 1/2/3）与评分档位的对应关系，第四档「已记住」单独走浮动按钮 */
 const OP_GRADE_BY_ID: Record<number, BookmarkGrade> = {
   1: 'hard',
@@ -132,6 +139,8 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   const { state, stats, updateSettings } = useProgress();
   // 会员状态与注册时间都来自用户信息
   const { user, refreshUserInfo } = useAuth();
+  /** 底部安全区（iPhone home indicator）：浮动按钮要抬高到操作栏之上 */
+  const insets = useSafeAreaInsets();
 
   /** 列表页带过来的已加载生词（服务端第一页起） */
   const initialWords: Word[] = Array.isArray(params.words) ? params.words : [];
@@ -900,9 +909,13 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
         </TouchableOpacity>
       ) : null}
 
-      {/* 右下角浮动「已记住」，对应 web 的 .slide_mark_finish */}
+      {/* 右下角浮动「已记住」，对应 web 的 .slide_mark_finish；bottom 按操作栏 + 安全区动态计算 */}
       <TouchableOpacity
-        style={[styles.floatRemember, grading && styles.actionBtnDisabled]}
+        style={[
+          styles.floatRemember,
+          { bottom: BOTTOM_BAR_HEIGHT + insets.bottom + FLOAT_REMEMBER_GAP },
+          grading && styles.actionBtnDisabled,
+        ]}
         onPress={() => handleGrade('remembered')}
         activeOpacity={0.9}
         disabled={grading}
@@ -1297,7 +1310,7 @@ const styles = StyleSheet.create({
   // 底部四档：稍后重来 / 1天困难 / 3天一般 / 7天容易，与 web .card_operate 一致
   bottomBar: {
     flexDirection: 'row',
-    height: 66,
+    height: BOTTOM_BAR_HEIGHT,
     backgroundColor: Colors.card,
   },
   opItem: {
@@ -1322,11 +1335,10 @@ const styles = StyleSheet.create({
   opDefaultText: {
     color: '#5A7A8A',
   },
-  // 右下角浮动「已记住」
+  // 右下角浮动「已记住」（bottom 由组件按操作栏高度 + 安全区动态给）
   floatRemember: {
     position: 'absolute',
     right: 14,
-    bottom: 78,
     width: 48,
     height: 48,
     borderRadius: 24,
