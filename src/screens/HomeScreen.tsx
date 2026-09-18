@@ -3,7 +3,7 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
+  ScrollView,
   Modal,
   TouchableOpacity,
   TouchableWithoutFeedback,
@@ -12,6 +12,8 @@ import {
   Image,
   ActivityIndicator,
   RefreshControl,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
@@ -19,23 +21,22 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useProgress } from '../storage/progressStore';
 import { useAuth } from '../context/AuthContext';
 import { packLibrary, RemotePack } from '../services/packLibrary';
+import {
+  fetchBookmarkedWords,
+  fetchNotebookStats,
+  fetchNotebookStudyWords,
+  NotebookStats,
+  BOOKMARK_REVIEW_TODO_TYPES,
+  NOTEBOOK_STUDY_LIMIT,
+} from '../services/bookmarkApi';
 import { Word } from '../types';
 import { Colors, getCategoryColor } from '../theme/colors';
 import { ProgressBar } from '../components/ProgressBar';
 
 /** 分类卡组分页大小 */
 const SUB_PAGE_SIZE = 30;
-/** 今日学习单词一次拉取的数量（与 web 端一致） */
-const TODAY_WORD_LIMIT = 50;
-/**
- * 今日学习单词池的卡片状态过滤：0 未学 / 1 学习中 / 2、3 学习中
- * 与服务端 today_card_count 口径一致（新词 + 学习中），已记住(4) 不再出现在今日学习里
- */
-const TODAY_WORD_TYPES = [0, 1, 2, 3];
-/** 复习待办：已经学过、但还没记住的卡片（1、2、3 为学习中状态） */
-const REVIEW_WORD_TYPES = [1, 2, 3];
-/** 今日单词折叠时预览条数 */
-const TODAY_PREVIEW_COUNT = 5;
+/** 生词本「复习待办」一次拉取的数量 */
+const NOTEBOOK_REVIEW_LIMIT = 50;
 /** 分类卡组默认展示的记住状态: 0 未记住 + 1 进行中 */
 const LEARNING_REMEMBER_TYPES = [0, 1];
 /** 「已记住」tab: remember_type = 2（已记住数量 = 词数） */
@@ -75,11 +76,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     isLoggedIn,
     user,
     currentPack,
-    todayWords,
-    todayWordsTotal,
     todayWordsPackId,
-    isLoadingTodayWords,
-    loadTodayWords,
     isLoadingPackWords,
     packWordsPackId,
     loadPackWordList,
@@ -125,11 +122,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [activeSub, setActiveSub] = useState<RemotePack | null>(null);
-  const [showAllToday, setShowAllToday] = useState(false);
-  /** 复习待办: 当前分类卡组下「学过但没记住」的单词（服务端实时返回） */
-  const [reviewWords, setReviewWords] = useState<Word[]>([]);
-  const [reviewTotal, setReviewTotal] = useState(0);
-  const [loadingReview, setLoadingReview] = useState(false);
+  /** 「今日学习-生词本」卡片数据：学习目标 / 已学习 / 总数量 */
+  const [notebook, setNotebook] = useState<NotebookStats | null>(null);
+  const [loadingNotebook, setLoadingNotebook] = useState(false);
+  /** 生词本复习待办: 学过但还没记住的单词（type = 1/2/3） */
+  const [notebookReviewWords, setNotebookReviewWords] = useState<Word[]>([]);
+  const [notebookReviewTotal, setNotebookReviewTotal] = useState(0);
+  const [loadingNotebookReview, setLoadingNotebookReview] = useState(false);
+  /** 「开始背词」正在拉取生词队列 */
+  const [startingNotebookStudy, setStartingNotebookStudy] = useState(false);
   // 新安装卡组的子卡组同步中
   const [preparingPack, setPreparingPack] = useState(false);
   const [preparedCount, setPreparedCount] = useState(0);
@@ -161,8 +162,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const subLoadGenRef = useRef(0);
   // 已自动选过默认分类卡组的父卡组 id（用户手动切换后不再覆盖）
   const autoPickedPackRef = useRef<number | null>(null);
-  // 复习待办请求代次，避免旧结果覆盖新结果
-  const reviewReqRef = useRef(0);
+  // 生词本统计请求代次，避免旧结果覆盖新结果
+  const notebookReqRef = useRef(0);
+  // 生词本复习待办请求代次
+  const notebookReviewReqRef = useRef(0);
   // 最近一次的状态快照，供「重新聚焦时刷新」在回调里读取最新值
   const homeRefreshRef = useRef<{
     selectedTop: RemotePack | null;
@@ -510,10 +513,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     setSubPacksParentId(null);
     setRememberedTotal(null);
     setLearningTotal(null);
-    setReviewWords([]);
-    setReviewTotal(0);
-    setLoadingReview(false);
-    setShowAllToday(false);
+    setNotebook(null);
+    setNotebookReviewWords([]);
+    setNotebookReviewTotal(0);
+    setLoadingNotebook(false);
+    setLoadingNotebookReview(false);
     setSubTab('learning');
     setErrorMsg(null);
     setLastPackName(null);
@@ -577,7 +581,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     if (parentChanged) {
       setSubPacksParentId(null);
       setActiveSub(null);
-      setShowAllToday(false);
       // 刚安装的卡组走轮询，等服务端把子卡组复制完
       if (justInstalledRef.current === selectedTop.id) {
         justInstalledRef.current = null;
@@ -625,11 +628,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     const fresh = learningPacks.find((p) => Number(p.id) === Number(activeSub.id));
     if (fresh && fresh !== activeSub) setActiveSub(fresh);
   }, [activeSub, learningPacks]);
-
-  // 只有真的切到另一个分类时才收起今日单词展开，避免切 tab 时列表被折叠
-  useEffect(() => {
-    setShowAllToday(false);
-  }, [activeSub?.id]);
 
   const reloadAll = useCallback(async () => {
     await loadTopPacks();
@@ -701,25 +699,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     });
   };
 
-  /** 确保已加载某个分类卡组的今日学习单词 */
-  const ensureTodayWords = useCallback(
-    async (pack: RemotePack): Promise<Word[]> => {
-      if (todayWordsPackId === pack.id && todayWords.length > 0) {
-        return todayWords;
-      }
-      setActiveSub(pack);
-      setShowAllToday(false);
-      return await loadTodayWords(pack.id, {
-        start: 0,
-        limit: TODAY_WORD_LIMIT,
-        types: TODAY_WORD_TYPES,
-        cat: selectedTop?.name || '',
-        sub: pack.name || '',
-      });
-    },
-    [todayWordsPackId, todayWords, loadTodayWords, selectedTop?.name]
-  );
-
   /**
    * 分类卡组列表加载完成后自动选中默认卡组（用户没手动点过时）:
    *   ① 闪卡页「继续学习下一个卡组」后 store 里的卡组仍在该列表 -> 保持它
@@ -727,7 +706,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
    *   ③ 都已记住时，退而取第一个今日还有单词的分类卡组
    * 同一父卡组只自动选一次，避免覆盖用户手动切换的结果。
    * 例外：焦点卡组从「未记住」列表里消失时（比如刚把它的单词全部记住，刷新后整组移到了「已记住」）
-   * 必须重新挑一个，否则今日学习区会一直显示那个已经学完的卡组。
+   * 必须重新挑一个，否则会一直停在那个已经学完的卡组上。
    */
   useEffect(() => {
     // 只在「分类卡组」tab 下自动挑默认分类，切到已记住时不重复拉取今日单词
@@ -753,13 +732,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     autoPickedPackRef.current = selectedTop.id;
     if (target) {
       setActiveSub(target);
-      setShowAllToday(false);
-      // 已缓存该卡组的今日单词时直接复用，不会重复请求
-      ensureTodayWords(target);
     } else if (!activeInList) {
-      // 列表里已经没有可学的分类卡组，清掉失效焦点，避免继续展示旧卡组的数据
+      // 列表里已经没有可学的分类卡组，清掉失效焦点
       setActiveSub(null);
-      setShowAllToday(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -769,65 +744,69 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     preparingPack,
     todayWordsPackId,
     activeSub,
-    ensureTodayWords,
   ]);
 
   /**
-   * 拉取某个分类卡组的「复习待办」单词（type = 1/2/3，学过但还没记住）。
-   * 直接调服务端接口而不写进 store，避免覆盖「今日学习单词」缓存。
+   * 生词本统计（今日学习-生词本卡片）：
+   * 学习 = conf.day_limit、已学习 = today_learned_card_count、总数量 = card_count。
    */
-  const loadReviewWords = useCallback(async (pack: RemotePack, topName: string) => {
-    const req = ++reviewReqRef.current;
-    setLoadingReview(true);
+  const loadNotebook = useCallback(async () => {
+    const req = ++notebookReqRef.current;
+    setLoadingNotebook(true);
     try {
-      const { words: list, total } = await packLibrary.fetchTodayWords(pack.id, {
-        start: 0,
-        limit: TODAY_WORD_LIMIT,
-        types: REVIEW_WORD_TYPES,
-        cat: topName,
-        sub: pack.name || '',
-      });
-      if (req !== reviewReqRef.current) return;
-      setReviewWords(list);
-      setReviewTotal(total || list.length);
+      const stats = await fetchNotebookStats();
+      if (req !== notebookReqRef.current) return;
+      setNotebook(stats);
     } catch {
-      if (req !== reviewReqRef.current) return;
-      setReviewWords([]);
-      setReviewTotal(0);
+      if (req !== notebookReqRef.current) return;
+      setNotebook(null);
     } finally {
       // 无条件复位：若本请求已被更新的请求取代，代次判断会让 loading 永久卡住
-      setLoadingReview(false);
+      setLoadingNotebook(false);
     }
   }, []);
 
-  // 切换分类卡组时刷新复习待办；切到「已记住」tab 不重复请求，保持原数据不动
+  /** 生词本复习待办：学过但还没记住的单词（type = 1/2/3），数量与队列都用它 */
+  const loadNotebookReview = useCallback(async () => {
+    const req = ++notebookReviewReqRef.current;
+    setLoadingNotebookReview(true);
+    try {
+      const page = await fetchBookmarkedWords({
+        start: 0,
+        limit: NOTEBOOK_REVIEW_LIMIT,
+        types: BOOKMARK_REVIEW_TODO_TYPES,
+      });
+      if (req !== notebookReviewReqRef.current) return;
+      setNotebookReviewWords(page.words);
+      setNotebookReviewTotal(page.total || page.words.length);
+    } catch {
+      if (req !== notebookReviewReqRef.current) return;
+      setNotebookReviewWords([]);
+      setNotebookReviewTotal(0);
+    } finally {
+      setLoadingNotebookReview(false);
+    }
+  }, []);
+
+  /** 登录态/账号变化后刷新生词本数据；未登录时清空，避免串账号 */
   useEffect(() => {
-    if (subTab !== 'learning') return;
-    if (!isLoggedIn || !activeSub) {
-      reviewReqRef.current += 1;
-      setReviewWords([]);
-      setReviewTotal(0);
-      setLoadingReview(false);
+    if (authLoading) return;
+    if (!isLoggedIn) {
+      notebookReqRef.current += 1;
+      notebookReviewReqRef.current += 1;
+      setNotebook(null);
+      setNotebookReviewWords([]);
+      setNotebookReviewTotal(0);
+      setLoadingNotebook(false);
+      setLoadingNotebookReview(false);
       return;
     }
-    loadReviewWords(activeSub, selectedTop?.name || '');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoggedIn, activeSub?.id, selectedTop?.name, loadReviewWords, subTab]);
+    loadNotebook();
+    loadNotebookReview();
+  }, [authLoading, isLoggedIn, (user as any)?.id, loadNotebook, loadNotebookReview]);
 
   /**
-   * 切回「分类卡组」tab 时补一次今日学习数据（今日单词 + 复习待办）。
-   * 只在已有选中分类时执行，避免首屏与上面的 effect 重复请求。
-   */
-  useEffect(() => {
-    if (subTab !== 'learning' || !isLoggedIn || !activeSub) return;
-    ensureTodayWords(activeSub).catch(() => {});
-    loadReviewWords(activeSub, selectedTop?.name || '');
-    // 只在切换 tab 时执行
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subTab]);
-
-  /**
-   * 从闪卡页学完返回时静默刷新：父级卡组统计 + 分类卡组统计 + 今日单词 + 复习待办，
+   * 从背词页学完返回时静默刷新：父级卡组统计 + 分类卡组统计 + 生词本统计与复习待办，
    * 保证卡片上的数字是学完之后的最新数据（首次聚焦跳过，避免重复请求）。
    */
   const focusedOnceRef = useRef(false);
@@ -838,30 +817,23 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         return;
       }
       if (!isLoggedIn) return;
-      const { selectedTop: top, activeSub: pack, subPackCount } = homeRefreshRef.current;
+      // 生词本统计与分类卡组无关，先刷新，再刷分类卡组
+      loadNotebook();
+      loadNotebookReview();
+      const { selectedTop: top, subPackCount } = homeRefreshRef.current;
       if (!top) return;
       // 保持已加载的分页长度，只静默替换最新数据
       loadSubPacks(top.id, 0, Math.max(SUB_PAGE_SIZE, subPackCount), true, currentRememberTypes);
       refreshSelectedTopStats(top.id);
       // 学完之后有分类卡组会整组移到另一个 tab，两边 tab 的数字都要重新取
       refreshTabCounts(top.id);
-      if (pack) {
-        loadTodayWords(pack.id, {
-          start: 0,
-          limit: TODAY_WORD_LIMIT,
-          types: TODAY_WORD_TYPES,
-          cat: top.name || '',
-          sub: pack.name || '',
-        }).catch(() => {});
-        loadReviewWords(pack, top.name || '');
-      }
     }, [
       isLoggedIn,
       loadSubPacks,
       refreshSelectedTopStats,
       refreshTabCounts,
-      loadTodayWords,
-      loadReviewWords,
+      loadNotebook,
+      loadNotebookReview,
       currentRememberTypes,
     ])
   );
@@ -890,190 +862,66 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     [loadPackWordList, selectedTop?.name, isLoggedIn, navigation, showNotice]
   );
 
-  /** 开始背词: 优先用指定分类，其次当前分类，最后取第一个有今日任务的分类 */
-  const handleStartStudy = useCallback(
-    async (pack?: RemotePack) => {
-      if (!isLoggedIn) {
-        promptLogin();
-        return;
-      }
-      // 背词只在「未记住」的卡组之间进行，与当前展示的 tab 无关
-      const target =
-        pack ||
-        activeSub ||
-        learningPacks.find((p) => (p.today_card_count || 0) > 0) ||
-        learningPacks[0];
-      if (!target) {
-        showNotice('提示', '暂无可学习的分类卡组');
-        return;
-      }
-      try {
-        const list = await ensureTodayWords(target);
-        if (!list.length) {
-          showNotice('太棒了', '该分类今日没有待学习的单词');
-          return;
-        }
-        // 把同一父卡组下的「兄弟卡组」一起带过去，学完当前卡组后可继续学下一个
-        const packIndex = learningPacks.findIndex((p) => Number(p.id) === Number(target.id));
-        navigation.navigate('Flashcard', {
-          // 直接带单词对象，避免闪卡页再从本地缓存里反查导致进不去
-          queueWords: list,
-          wordIds: list.map((w) => w.id),
-          title: target.name,
-          // 当前子卡组 id + 顶层卡组名（继续学习下一个卡组时使用）
-          packId: target.id,
-          packCat: selectedTop?.name || '',
-          packQueue: learningPacks.map((p) => ({ id: p.id, name: p.name })),
-          packIndex,
-          // 还有未加载的子卡组时，学完本页最后一个只提示、不误导
-          hasMorePacks: (learningTotal ?? learningPacks.length) > learningPacks.length,
-        });
-      } catch (e: any) {
-        showNotice('加载失败', e?.message || '获取今日学习单词失败');
-      }
-    },
-    [
-      ensureTodayWords,
-      activeSub,
-      learningPacks,
-      learningTotal,
-      selectedTop?.name,
-      isLoggedIn,
-      navigation,
-    ]
-  );
-
-  /** 复习待办: 用服务端返回的「学过但没记住」的单词直接进入闪卡复习 */
-  const handleStartReview = useCallback(() => {
-    const pack = activeSub;
-    if (!pack) {
-      showNotice('提示', '请先点击下方分类卡组');
+  /**
+   * 「今日学习-生词本」开始背词:
+   * GET /anki/pack/{生词本}/learn.json 取今日待学生词，直接进入生词本复习页。
+   */
+  const handleStartNotebookStudy = useCallback(async () => {
+    if (!isLoggedIn) {
+      promptLogin();
       return;
     }
-    if (!reviewWords.length) {
-      showNotice('太棒了', '该分类暂时没有需要复习的单词');
+    setStartingNotebookStudy(true);
+    try {
+      const { words } = await fetchNotebookStudyWords({
+        start: 0,
+        limit: NOTEBOOK_STUDY_LIMIT,
+      });
+      if (!words.length) {
+        showNotice('太棒了', '生词本今日没有待学习的单词');
+        return;
+      }
+      navigation.navigate('BookmarkStudy', {
+        words,
+        startIndex: 0,
+        total: words.length,
+      });
+    } catch (e: any) {
+      showNotice('加载失败', e?.message || '获取生词本学习单词失败');
+    } finally {
+      setStartingNotebookStudy(false);
+    }
+  }, [isLoggedIn, navigation, showNotice]);
+
+  /** 生词本复习待办: 用「学过但还没记住」的生词直接进入生词本复习页 */
+  const handleStartNotebookReview = useCallback(() => {
+    if (!notebookReviewWords.length) {
+      showNotice('太棒了', '生词本暂时没有需要复习的单词');
       return;
     }
-    const packIndex = learningPacks.findIndex((p) => Number(p.id) === Number(pack.id));
-    navigation.navigate('Flashcard', {
-      queueWords: reviewWords,
-      title: `${pack.name} · 复习`,
-      packId: pack.id,
-      packCat: selectedTop?.name || '',
-      packQueue: learningPacks.map((p) => ({ id: p.id, name: p.name })),
-      packIndex,
-      hasMorePacks: (learningTotal ?? learningPacks.length) > learningPacks.length,
+    navigation.navigate('BookmarkStudy', {
+      words: notebookReviewWords,
+      startIndex: 0,
+      total: notebookReviewTotal,
+      types: BOOKMARK_REVIEW_TODO_TYPES,
     });
-  }, [activeSub, reviewWords, learningPacks, learningTotal, selectedTop?.name, navigation]);
-
-  const handleOpenTodayList = () => {
-    if (!activeSub || !todayWords.length) return;
-    navigation.navigate('WordList', {
-      source: 'today',
-      title: activeSub.name,
-    });
-  };
+  }, [notebookReviewWords, notebookReviewTotal, navigation, showNotice]);
 
   /**
-   * 当前焦点分类卡组的掌握情况：今日学习卡片上的数字全部取自它。
-   * 服务端 remembered_card_count 不实时更新，叠加本地学习增量（与列表卡片同一口径）。
+   * 分类卡组整体进度: 已记住卡组数 / (已记住 + 未记住) 卡组数。
+   * 两个数字都来自 tab 上各自记住状态的卡组总数，不随当前 tab 变化。
    */
-  const focusMastery = useMemo(() => {
-    const total = activeSub?.card_count || 0;
-    const delta = activeSub ? packMasteredDelta[activeSub.id] || 0 : 0;
-    const remembered = Math.max(
-      0,
-      Math.min(total, (activeSub?.remembered_card_count || 0) + delta)
-    );
+  const packProgress = useMemo(() => {
+    const remembered = rememberedTotal ?? 0;
+    const learning = learningTotal ?? 0;
+    const total = remembered + learning;
     return {
-      total,
       remembered,
-      remaining: Math.max(0, total - remembered),
+      learning,
+      total,
       progress: total > 0 ? Math.min(1, remembered / total) : 0,
     };
-  }, [activeSub, packMasteredDelta]);
-
-  /** 今日单词池（learn-by-menu 实时返回）: 当前分类卡组今日要学的单词总数 */
-  const todayPoolTotal =
-    activeSub && Number(todayWordsPackId) === Number(activeSub.id)
-      ? todayWordsTotal
-      : undefined;
-
-  /** 今日学习单词预览（当前分类卡组） */
-  const renderTodayWords = () => {
-    if (!activeSub) return null;
-
-    // 「已记住」tab 不刷新今日学习数据，也就不需要显示加载态
-    const isLoadingThis =
-      subTab === 'learning' &&
-      (isLoadingTodayWords || Number(todayWordsPackId) !== Number(activeSub.id));
-    const visibleWords = showAllToday ? todayWords : todayWords.slice(0, TODAY_PREVIEW_COUNT);
-
-    return (
-      <View style={styles.todayBlock}>
-        <View style={styles.todayBlockHeader}>
-          <Text style={styles.todayBlockTitle}>今日单词</Text>
-          <Text style={styles.todayBlockCount}>
-            {isLoadingThis
-              ? '加载中'
-              : `${todayWords.length}${todayPoolTotal ? ` / ${todayPoolTotal}` : ''} 词`}
-          </Text>
-          <TouchableOpacity
-            style={styles.todayMoreBtn}
-            onPress={handleOpenTodayList}
-            activeOpacity={0.7}
-            disabled={!todayWords.length}
-          >
-            <Text style={[styles.todayMoreText, !todayWords.length && styles.todayMoreTextDisabled]}>
-              查看全部
-            </Text>
-            <Ionicons
-              name="chevron-forward"
-              size={13}
-              color={todayWords.length ? Colors.primary : Colors.textMuted}
-            />
-          </TouchableOpacity>
-        </View>
-
-        {isLoadingThis ? (
-          <View style={styles.todayLoading}>
-            <ActivityIndicator size="small" color={Colors.primary} />
-            <Text style={styles.todayLoadingText}>正在获取今日单词...</Text>
-          </View>
-        ) : todayWords.length === 0 ? (
-          <Text style={styles.todayEmptyText}>该分类今日没有待学的单词，已全部掌握</Text>
-        ) : (
-          <>
-            {visibleWords.map((w) => (
-              <View key={w.id} style={styles.todayWordRow}>
-                <Text style={styles.todayWordText}>{w.word}</Text>
-                <Text style={styles.todayWordMeaning} numberOfLines={1}>
-                  {w.meaning || w.note}
-                </Text>
-              </View>
-            ))}
-
-            {todayWords.length > TODAY_PREVIEW_COUNT ? (
-              <TouchableOpacity
-                style={styles.todayToggle}
-                onPress={() => setShowAllToday((v) => !v)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.todayToggleText}>
-                  {showAllToday ? '收起' : `展开全部 ${todayWords.length} 个单词`}
-                </Text>
-                <Ionicons
-                  name={showAllToday ? 'chevron-up' : 'chevron-down'}
-                  size={14}
-                  color={Colors.primary}
-                />
-              </TouchableOpacity>
-            ) : null}
-          </>
-        )}
-      </View>
-    );
-  };
+  }, [rememberedTotal, learningTotal]);
 
   const renderSubPack = ({ item }: { item: RemotePack }) => {
     const isActive = activeSub?.id === item.id;
@@ -1088,9 +936,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     const color = getCategoryColor(item.name);
     const isLoadingList = isLoadingPackWords && packWordsPackId === item.id;
 
+    // 行底色取该分类识别色的极淡 tint（选中时加深），比统一灰底更有辨识度
+    const rowTint = isActive ? `${color}2E` : `${color}12`;
+
     return (
       <TouchableOpacity
-        style={[styles.subCard, isActive && styles.subCardActive]}
+        style={[
+          styles.subCard,
+          { backgroundColor: rowTint, borderColor: isActive ? color : 'transparent' },
+        ]}
         onPress={() => handleOpenPackWordList(item)}
         activeOpacity={0.8}
       >
@@ -1121,11 +975,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           </View>
 
           <View style={styles.subProgressWrap}>
-            <ProgressBar progress={progress} height={4} color={color} />
+            <ProgressBar progress={progress} height={4} color={color} backgroundColor="#FFFFFF" />
           </View>
         </View>
 
-        <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color={isActive ? color : Colors.textMuted}
+        />
       </TouchableOpacity>
     );
   };
@@ -1158,186 +1016,304 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     </View>
   );
 
-  /** 可随列表滚动的内容：今日学习看板 + 分类卡组标题 */
-  const renderListHeader = () => (
-    <View>
-      {/* 今日学习看板卡片 */}
-      <View style={styles.dashboardCard}>
-        {authLoading ? (
-          /* 登录状态读取中 */
-          <View style={styles.loginStateWrap}>
-            <ActivityIndicator size="small" color={Colors.primary} />
-            <Text style={styles.loginStateDesc}>正在读取登录状态…</Text>
-          </View>
-        ) : !isLoggedIn ? (
-          /* 未登录状态 */
-          <>
-            <View style={styles.dashHeader}>
-              <View style={styles.dashTitleWrap}>
-                <Text style={styles.dashTitle}>今日学习</Text>
-                <Text style={styles.dashSubtitle}>未登录，登录后即可开始今日学习</Text>
-              </View>
-              <View style={styles.unloginTag}>
-                <Ionicons name="person-outline" size={13} color={Colors.textMuted} />
-                <Text style={styles.unloginTagText}>未登录</Text>
-              </View>
-            </View>
+  /** 生词本统计格子: 学习 / 已学习 / 总数量 */
+  const renderNotebookStat = (
+    label: string,
+    value: number | string,
+    icon: keyof typeof Ionicons.glyphMap,
+    accent: string
+  ) => (
+    <View style={styles.notebookStatCell}>
+      <View style={[styles.notebookStatIcon, { backgroundColor: `${accent}1F` }]}>
+        <Ionicons name={icon} size={14} color={accent} />
+      </View>
+      <Text style={styles.notebookStatValue}>{value}</Text>
+      <Text style={styles.notebookStatLabel}>{label}</Text>
+    </View>
+  );
 
-            <View style={styles.loginStateWrap}>
-              <View style={styles.loginStateIcon}>
-                <Ionicons name="log-in-outline" size={30} color={Colors.textMuted} />
-              </View>
-              <Text style={styles.loginStateTitle}>登录后开始今日学习</Text>
-              <Text style={styles.loginStateDesc}>
-                登录后可获取在线卡组的今日学习单词，并同步学习进度
-              </Text>
-              <TouchableOpacity
-                style={styles.loginMainBtn}
-                onPress={() => navigation.navigate('Login')}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="log-in-outline" size={17} color="#FFFFFF" />
-                <Text style={styles.loginMainBtnText}>立即登录</Text>
-              </TouchableOpacity>
+  /** 今日学习看板卡片（数据全部来自生词本） */
+  const renderDashboardCard = () => (
+    <View style={styles.dashboardCard}>
+      {authLoading ? (
+        /* 登录状态读取中 */
+        <View style={styles.loginStateWrap}>
+          <ActivityIndicator size="small" color={Colors.primary} />
+          <Text style={styles.loginStateDesc}>正在读取登录状态…</Text>
+        </View>
+      ) : !isLoggedIn ? (
+        /* 未登录状态 */
+        <>
+          <View style={styles.dashHeader}>
+            <View style={styles.dashTitleWrap}>
+              <Text style={styles.dashTitle}>今日学习-生词本</Text>
+              <Text style={styles.dashSubtitle}>未登录，登录后即可开始今日学习</Text>
             </View>
-          </>
-        ) : (
-          /* 已登录状态 */
-          <>
-            {/* 头部: 当前焦点分类卡组 + 该分类的掌握度 */}
-            <View style={styles.dashHeader}>
-              <View style={styles.dashTitleWrap}>
-                <Text style={styles.dashTitle}>今日学习</Text>
-                <Text style={styles.dashSubtitle} numberOfLines={1}>
-                  {selectedTop ? selectedTop.name : '我的卡组'}
-                  {activeSub ? ` · ${activeSub.name}` : ''}
+            <View style={styles.unloginTag}>
+              <Ionicons name="person-outline" size={13} color={Colors.textMuted} />
+              <Text style={styles.unloginTagText}>未登录</Text>
+            </View>
+          </View>
+
+          <View style={styles.loginStateWrap}>
+            <View style={styles.loginStateIcon}>
+              <Ionicons name="log-in-outline" size={30} color={Colors.textMuted} />
+            </View>
+            <Text style={styles.loginStateTitle}>登录后开始今日学习</Text>
+            <Text style={styles.loginStateDesc}>
+              登录后可获取在线卡组的今日学习单词，并同步学习进度
+            </Text>
+            <TouchableOpacity
+              style={styles.loginMainBtn}
+              onPress={() => navigation.navigate('Login')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="log-in-outline" size={17} color="#FFFFFF" />
+              <Text style={styles.loginMainBtnText}>立即登录</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      ) : (
+        /* 已登录状态: 数据全部取自生词本 */
+        <>
+          {/* 第一行: 标题 + 今日目标完成度 */}
+          <View style={styles.dashHeader}>
+            <View style={styles.dashTitleIcon}>
+              <Ionicons name="book-outline" size={16} color="#FFFFFF" />
+            </View>
+            <View style={styles.dashTitleWrap}>
+              <Text style={styles.dashTitle}>今日学习-生词本</Text>
+              <Text style={styles.dashSubtitle} numberOfLines={1}>
+                {loadingNotebook
+                  ? '正在获取生词本数据…'
+                  : notebook
+                  ? `今日目标 ${notebook.dayLimit} 个生词`
+                  : '生词本数据获取失败'}
+              </Text>
+            </View>
+            {!loadingNotebook && notebook?.dayLimit ? (
+              <View style={styles.dashPercentBadge}>
+                <Text style={styles.dashPercentText}>
+                  {Math.round(
+                    Math.min(1, (notebook?.learnedToday || 0) / notebook.dayLimit) * 100
+                  )}
+                  %
                 </Text>
               </View>
-              {activeSub ? (
-                <View style={styles.dashPercentBadge}>
-                  <Text style={styles.dashPercentText}>
-                    {Math.round(focusMastery.progress * 100)}%
-                  </Text>
-                </View>
-              ) : null}
-            </View>
+            ) : null}
+          </View>
 
-            {activeSub ? (
-              <>
-                {/* 当前焦点分类卡组的掌握进度（已记住数叠加本地学习增量） */}
-                <View style={styles.dashProgressTrack}>
-                  <ProgressBar progress={focusMastery.progress} height={8} color={Colors.primary} />
-                </View>
-                <View style={styles.dashProgressMeta}>
-                  <Text style={styles.dashProgressMetaText}>
-                    已记住 {focusMastery.remembered}/{focusMastery.total} 词
-                  </Text>
-                  <Text style={styles.dashProgressMetaText}>
-                    未记住 {focusMastery.remaining} 词
-                  </Text>
-                </View>
-
-                {/* 今日任务: 当前焦点分类卡组，只保留「复习待办 / 开始背词」两个入口 */}
-                <View style={styles.todayTaskBox}>
-                  <TouchableOpacity
-                    style={[
-                      styles.actionBtn,
-                      styles.reviewBtn,
-                      (!reviewTotal || (subTab === 'learning' && loadingReview)) &&
-                        styles.actionBtnDisabled,
-                    ]}
-                    onPress={handleStartReview}
-                    activeOpacity={0.8}
-                    disabled={!reviewTotal || (subTab === 'learning' && loadingReview)}
-                  >
-                    {subTab === 'learning' && loadingReview ? (
-                      <ActivityIndicator size="small" color={Colors.primary} />
-                    ) : (
-                      <Ionicons name="repeat" size={18} color={Colors.primary} />
-                    )}
-                    <Text style={styles.reviewBtnText}>复习待办</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.actionBtn, styles.primaryBtn]}
-                    onPress={() => handleStartStudy(activeSub)}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="flash" size={18} color="#FFFFFF" />
-                    <Text style={styles.primaryBtnText}>开始背词</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            ) : (
-              <View style={styles.todayHintWrap}>
-                <Ionicons name="sparkles-outline" size={15} color={Colors.textMuted} />
-                <Text style={styles.todayHintText}>点击下方分类卡组，查看并开始今日学习</Text>
-              </View>
+          {/* 第二行: 学习 / 已学习 / 总数量 */}
+          <View style={styles.notebookStatsRow}>
+            {renderNotebookStat(
+              '学习目标',
+              notebook?.dayLimit ?? '-',
+              'flag-outline',
+              Colors.primary
             )}
+            {renderNotebookStat(
+              '已学习',
+              notebook?.learnedToday ?? '-',
+              'checkmark-circle-outline',
+              Colors.success
+            )}
+            {renderNotebookStat(
+              '总数量',
+              notebook?.totalWords ?? '-',
+              'library-outline',
+              Colors.accent
+            )}
+          </View>
 
-            {renderTodayWords()}
-          </>
-        )}
+          {/* 今日目标完成进度: 已学习 / 学习目标 */}
+          <View style={styles.dashProgressTrack}>
+            <ProgressBar
+              progress={
+                notebook?.dayLimit
+                  ? Math.min(1, (notebook?.learnedToday || 0) / notebook.dayLimit)
+                  : 0
+              }
+              height={8}
+              color={Colors.primary}
+            />
+          </View>
+          <View style={styles.dashProgressMeta}>
+            <Text style={styles.dashProgressMetaText}>
+              今日已学 {notebook?.learnedToday ?? 0}
+              {notebook?.dayLimit ? ` / ${notebook.dayLimit}` : ''} 词
+            </Text>
+            <Text style={styles.dashProgressMetaText}>
+              生词本共 {notebook?.totalWords ?? 0} 词
+            </Text>
+          </View>
+
+          {/* 第三行: 复习待办 + 开始背词 */}
+          <View style={styles.todayTaskBox}>
+            <TouchableOpacity
+              style={[
+                styles.actionBtn,
+                styles.reviewBtn,
+                (!notebookReviewTotal || loadingNotebookReview) && styles.actionBtnDisabled,
+              ]}
+              onPress={handleStartNotebookReview}
+              activeOpacity={0.8}
+              disabled={!notebookReviewTotal || loadingNotebookReview}
+            >
+              {loadingNotebookReview ? (
+                <ActivityIndicator size="small" color={Colors.primary} />
+              ) : (
+                <Ionicons name="repeat" size={18} color={Colors.primary} />
+              )}
+              <Text style={styles.reviewBtnText}>
+                复习待办{notebookReviewTotal ? ` ${notebookReviewTotal}` : ''}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.actionBtn,
+                styles.primaryBtn,
+                startingNotebookStudy && styles.actionBtnDisabled,
+              ]}
+              onPress={handleStartNotebookStudy}
+              activeOpacity={0.8}
+              disabled={startingNotebookStudy}
+            >
+              {startingNotebookStudy ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Ionicons name="flash" size={18} color="#FFFFFF" />
+              )}
+              <Text style={styles.primaryBtnText}>开始背词</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
+    </View>
+  );
+
+  /**
+   * 分类卡组卡片：标题（父卡组名）+ 整体进度条 + 未记住/已记住 tab + 卡组列表，
+   * 与上方「今日学习」同款卡片外观。
+   */
+  const renderPacksCard = () => (
+    <View style={styles.packsCard}>
+      {/* 第一行: 父卡组名称 + 整体完成度 */}
+      <View style={styles.packsHeader}>
+        <View style={styles.packsTitleIcon}>
+          <Ionicons name="albums-outline" size={16} color="#FFFFFF" />
+        </View>
+        <View style={styles.packsTitleWrap}>
+          <Text style={styles.packsTitle} numberOfLines={1}>
+            {selectedTop?.name || '我的卡组'}
+          </Text>
+          <Text style={styles.packsSubtitle} numberOfLines={1}>
+            {packProgress.total > 0
+              ? `共 ${packProgress.total} 个分类卡组 · 已记住 ${packProgress.remembered} 个`
+              : '暂无分类卡组'}
+          </Text>
+        </View>
+        <View style={styles.packsPercentBadge}>
+          <Text style={styles.packsPercentText}>{Math.round(packProgress.progress * 100)}%</Text>
+        </View>
       </View>
 
-      {/* 分类卡组两个 tab：未记住（默认）/ 已记住 */}
-      <View style={styles.sectionHeader}>
+      {/* 已记住卡组数 / (已记住 + 未记住) 卡组数 */}
+      <View style={styles.packsProgressTrack}>
+        <ProgressBar progress={packProgress.progress} height={8} color={Colors.success} />
+      </View>
+      <View style={styles.packsProgressMeta}>
+        <Text style={styles.packsProgressText}>
+          已记住 <Text style={styles.packsProgressStrong}>{packProgress.remembered}</Text> 组
+        </Text>
+        <Text style={styles.packsProgressText}>
+          未记住 <Text style={styles.packsProgressStrong}>{packProgress.learning}</Text> 组
+        </Text>
+      </View>
+
+      {/* 未记住 / 已记住 切换 */}
+      <View style={styles.packsTabs}>
         <TouchableOpacity
-          style={[styles.subTabPill, subTab === 'learning' && styles.subTabPillActive]}
+          style={[styles.packsTab, subTab === 'learning' && styles.packsTabActive]}
           onPress={() => setSubTab('learning')}
           activeOpacity={0.8}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Text
-            style={[styles.subTabPillText, subTab === 'learning' && styles.subTabPillTextActive]}
-          >
-            分类卡组{learningTotal ? ` ${learningTotal}` : ''}
+          <Ionicons
+            name={subTab === 'learning' ? 'albums' : 'albums-outline'}
+            size={14}
+            color={subTab === 'learning' ? Colors.primary : Colors.textTertiary}
+          />
+          <Text style={[styles.packsTabText, subTab === 'learning' && styles.packsTabTextActive]}>
+            {`未记住${learningTotal != null ? ` ${learningTotal}` : ''}`}
           </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.rememberedTab, subTab === 'remembered' && styles.rememberedTabActive]}
+          style={[styles.packsTab, subTab === 'remembered' && styles.packsTabActive]}
           onPress={() => setSubTab('remembered')}
           activeOpacity={0.8}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           <Ionicons
             name={subTab === 'remembered' ? 'checkmark-circle' : 'checkmark-circle-outline'}
-            size={13}
-            color={subTab === 'remembered' ? '#FFFFFF' : Colors.success}
+            size={14}
+            color={subTab === 'remembered' ? Colors.success : Colors.textTertiary}
           />
           <Text
             style={[
-              styles.rememberedTabText,
-              subTab === 'remembered' && styles.rememberedTabTextActive,
+              styles.packsTabText,
+              subTab === 'remembered' && styles.packsTabTextActive,
+              subTab === 'remembered' && styles.packsTabTextDone,
             ]}
           >
-            已记住{rememberedTotal != null ? ` ${rememberedTotal}` : ''}
+            {`已记住${rememberedTotal != null ? ` ${rememberedTotal}` : ''}`}
           </Text>
         </TouchableOpacity>
       </View>
 
       {/* 新安装卡组的子卡组同步进度 */}
       {preparingPack ? (
-        <View style={styles.preparingBar}>
+        <View style={styles.preparingInnerBar}>
           <ActivityIndicator size="small" color={Colors.primary} />
           <Text style={styles.preparingText}>
             卡组数据同步中… 已获取 {preparedCount} 个分类卡组
           </Text>
         </View>
       ) : null}
-    </View>
-  );
 
-  const renderEmpty = () => {
-    if (authLoading || loadingPacks || loadingSubs) {
-      return (
+      {/* 卡组列表 / 加载 / 空态 */}
+      {authLoading || loadingPacks || (loadingSubs && subPacks.length === 0) ? (
         <View style={styles.centerPadding}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>正在加载卡组...</Text>
         </View>
-      );
-    }
+      ) : subPacks.length === 0 ? (
+        renderEmpty()
+      ) : (
+        <>
+          {subPacks.map((item) => (
+            <React.Fragment key={item.id}>{renderSubPack({ item })}</React.Fragment>
+          ))}
+          {loadingSubs ? (
+            <View style={styles.footerLoading}>
+              <ActivityIndicator size="small" color={Colors.primary} />
+            </View>
+          ) : null}
+        </>
+      )}
+    </View>
+  );
+
+  /** 触底加载下一页分类卡组（ScrollView 无 onEndReached，这里按滚动位置判断） */
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+    const reachedBottom =
+      contentOffset.y + layoutMeasurement.height >= contentSize.height - 240;
+    if (!reachedBottom) return;
+    handleLoadMore();
+  };
+
+  /** 卡组列表为空时的占位（加载态由卡片外层统一处理） */
+  const renderEmpty = () => {
     // 未登录: 登录入口已放在「今日学习」卡片，这里只做无按钮的占位提示
     if (!isLoggedIn) {
       return (
@@ -1392,27 +1368,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       {/* 固定顶部标题栏 */}
       {renderTopBar()}
 
-      <FlatList
-        data={subPacks}
-        keyExtractor={(item) => String(item.id)}
-        renderItem={renderSubPack}
-        ListHeaderComponent={renderListHeader}
-        ListEmptyComponent={renderEmpty}
-        ListFooterComponent={
-          loadingSubs && subPacks.length > 0 ? (
-            <View style={styles.footerLoading}>
-              <ActivityIndicator size="small" color={Colors.primary} />
-            </View>
-          ) : null
-        }
-        onEndReached={handleLoadMore}
-        onEndReachedThreshold={0.4}
+      <ScrollView
+        onScroll={handleScroll}
+        scrollEventThrottle={200}
         refreshControl={
           <RefreshControl refreshing={loadingPacks} onRefresh={reloadAll} colors={[Colors.primary]} />
         }
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
-      />
+      >
+        {/* 今日学习看板 */}
+        {renderDashboardCard()}
+
+        {/* 分类卡组：标题 + 整体进度 + tab + 列表，统一包成一张卡片 */}
+        {renderPacksCard()}
+      </ScrollView>
 
       <ConfirmDialog
         visible={dialog !== null}
@@ -1527,7 +1497,9 @@ const styles = StyleSheet.create({
   dashboardCard: {
     backgroundColor: Colors.card,
     borderRadius: 18,
-    margin: 16,
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 12,
     padding: 20,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -1541,6 +1513,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  dashTitleIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
   },
   dashTitleWrap: {
     flex: 1,
@@ -1561,6 +1542,40 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
+  },
+  // 第二行: 学习 / 已学习 / 总数量
+  notebookStatsRow: {
+    flexDirection: 'row',
+    marginTop: 16,
+    gap: 10,
+  },
+  notebookStatCell: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: Colors.backgroundAlt,
+    borderWidth: 1,
+    borderColor: Colors.divider,
+  },
+  notebookStatIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  notebookStatValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.textPrimary,
+    lineHeight: 24,
+  },
+  notebookStatLabel: {
+    marginTop: 2,
+    fontSize: 12,
+    color: Colors.textSecondary,
   },
   // 未登录标记
   unloginTag: {
@@ -1681,107 +1696,6 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
 
-  // 今日学习单词列表
-  todayHintWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.divider,
-    gap: 6,
-  },
-  todayHintText: {
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  todayBlock: {
-    marginTop: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Colors.divider,
-  },
-  todayBlockHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  todayBlockTitle: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginRight: 8,
-  },
-  todayBlockCount: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  todayMoreBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  todayMoreText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  todayMoreTextDisabled: {
-    color: Colors.textMuted,
-  },
-  todayLoading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    gap: 8,
-  },
-  todayLoadingText: {
-    fontSize: 12,
-    color: Colors.primary,
-    fontWeight: '600',
-  },
-  todayEmptyText: {
-    fontSize: 13,
-    color: Colors.textMuted,
-    textAlign: 'center',
-    paddingVertical: 14,
-  },
-  todayWordRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.divider,
-  },
-  todayWordText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    width: 110,
-    marginRight: 10,
-  },
-  todayWordMeaning: {
-    flex: 1,
-    fontSize: 13,
-    color: Colors.textSecondary,
-  },
-  todayToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 10,
-    gap: 4,
-  },
-  todayToggleText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.primary,
-  },
   todayActionRow: {
     flexDirection: 'row',
     gap: 10,
@@ -1819,67 +1733,125 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
-  // 分类卡组
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 20,
-    marginTop: 4,
-    marginBottom: 8,
-  },
-  // 左侧「分类卡组」tab（未记住 + 进行中）
-  subTabPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
+  // 分类卡组卡片：与上方「今日学习」同款外观
+  packsCard: {
     backgroundColor: Colors.card,
+    borderRadius: 18,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 16,
     borderWidth: 1,
     borderColor: Colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  subTabPillActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  subTabPillText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.textSecondary,
-  },
-  subTabPillTextActive: {
-    color: '#FFFFFF',
-  },
-  // 「已记住」tab：remember_type = 2
-  rememberedTab: {
+  // 第一行: 父卡组名称 + 整体完成度
+  packsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+  },
+  packsTitleIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.28,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  packsTitleWrap: {
+    flex: 1,
+    marginRight: 8,
+    minWidth: 0,
+  },
+  packsTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: Colors.textPrimary,
+  },
+  packsSubtitle: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  packsPercentBadge: {
+    backgroundColor: Colors.success + '1A',
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 12,
-    backgroundColor: Colors.success + '14',
-    borderWidth: 1,
-    borderColor: Colors.success + '33',
   },
-  rememberedTabActive: {
-    backgroundColor: Colors.success,
-    borderColor: Colors.success,
-  },
-  rememberedTabText: {
-    fontSize: 12,
-    fontWeight: '700',
+  packsPercentText: {
+    fontSize: 13,
+    fontWeight: '800',
     color: Colors.success,
   },
-  rememberedTabTextActive: {
-    color: '#FFFFFF',
+  packsProgressTrack: {
+    marginTop: 14,
   },
-  preparingBar: {
+  packsProgressMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: 16,
-    marginBottom: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    justifyContent: 'space-between',
+    marginTop: 6,
+  },
+  packsProgressText: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  packsProgressStrong: {
+    fontWeight: '800',
+    color: Colors.textPrimary,
+  },
+  // 未记住 / 已记住 分段控件
+  packsTabs: {
+    flexDirection: 'row',
+    marginTop: 14,
+    padding: 3,
+    borderRadius: 12,
+    backgroundColor: Colors.divider,
+  },
+  packsTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  packsTabActive: {
+    backgroundColor: Colors.card,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  packsTabText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.textTertiary,
+  },
+  packsTabTextActive: {
+    color: Colors.primary,
+  },
+  packsTabTextDone: {
+    color: Colors.success,
+  },
+  preparingInnerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
     borderRadius: 10,
     backgroundColor: Colors.primaryLight,
     borderWidth: 1,
@@ -1892,32 +1864,20 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.primaryDark,
   },
+  // 卡片内的分类卡组行：底色按分类识别色做极淡 tint（由 renderSubPack 动态给）
   subCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.card,
     borderRadius: 14,
-    marginHorizontal: 16,
-    marginVertical: 6,
+    marginTop: 10,
     paddingRight: 12,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: 'transparent',
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  subCardActive: {
-    borderColor: Colors.primary,
-    borderWidth: 2,
   },
   subColorBar: {
     width: 4,
     alignSelf: 'stretch',
-    borderTopLeftRadius: 12,
-    borderBottomLeftRadius: 12,
   },
   subCardBody: {
     flex: 1,
@@ -1940,7 +1900,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
-    backgroundColor: Colors.divider,
+    backgroundColor: Colors.card,
   },
   subCountPillText: {
     fontSize: 11,
@@ -1955,7 +1915,7 @@ const styles = StyleSheet.create({
   },
   subMetaText: {
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.textSecondary,
   },
   subTodayText: {
     fontSize: 12,
@@ -1968,9 +1928,8 @@ const styles = StyleSheet.create({
 
   // 未登录时的分类卡组占位（无按钮，避免与上方登录入口重复）
   lockedBox: {
-    marginHorizontal: 16,
-    marginTop: 4,
-    paddingVertical: 26,
+    marginTop: 12,
+    paddingVertical: 22,
     paddingHorizontal: 20,
     borderRadius: 14,
     borderWidth: 1,
@@ -1992,7 +1951,8 @@ const styles = StyleSheet.create({
 
   // 空态 / 加载
   centerPadding: {
-    paddingTop: 60,
+    paddingTop: 26,
+    paddingBottom: 10,
     alignItems: 'center',
   },
   loadingText: {
@@ -2002,8 +1962,8 @@ const styles = StyleSheet.create({
   },
   emptyWrap: {
     alignItems: 'center',
-    paddingTop: 40,
-    paddingHorizontal: 30,
+    paddingTop: 22,
+    paddingHorizontal: 20,
   },
   emptyText: {
     fontSize: 14,

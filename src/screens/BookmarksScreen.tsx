@@ -94,7 +94,7 @@ interface BookmarksScreenProps {
 /** 被 VIP 拦截、待开通会员后继续执行的「标记记住」 */
 type PendingMark = { type: 'single'; word: Word } | { type: 'all'; words: Word[] };
 
-/** note 首行可能是音标（如「美 /ɡleɪd/  英 /ɡleɪd/」或「[ɡleɪd]」） */
+/** note 首行可能是音标（如「英 /ɡleɪd/  美 /ɡleɪd/」或「[ɡleɪd]」） */
 function extractPhonetic(note: string): string {
   if (!note) return '';
   const first = note.split('\n')[0].trim();

@@ -42,6 +42,10 @@ const BOTTOM_PANEL_HEIGHT = Math.min(190, Math.max(130, Math.round(SCREEN_HEIGHT
 const TAG_HEIGHT = 28;
 /** 飞行动画时长 */
 const FLY_DURATION = 560;
+/** 今日学习单词一次拉取的数量（与首页 / 背词页保持一致） */
+const TODAY_WORD_LIMIT = 50;
+/** 今日学习卡片的过滤：0 未学 / 1、2、3 学习中（已记住 4 不再出现） */
+const TODAY_WORD_TYPES = [0, 1, 2, 3];
 /** 卡组 summary（分类词汇辨析）缓存，避免反复请求；key = 账号id#卡组id */
 const summaryCache = new Map<string, string>();
 
@@ -65,6 +69,12 @@ interface Rect {
 type PendingMark =
   | { type: 'single'; word: Word; from: Rect }
   | { type: 'all'; words: Word[] };
+
+/** 同一父卡组下的兄弟卡组（用于「学习下一个卡组」） */
+interface SiblingPack {
+  id: number;
+  name: string;
+}
 
 /** 一个正在飞往底部区域的单词标签 */
 interface FlyItem {
@@ -383,6 +393,9 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     packWords,
     todayWordsPackId,
     packWordsPackId,
+    loadTodayWords,
+    loadPackWordList,
+    currentTopPack,
   } = useProgress();
   // 会员状态与注册时间都来自用户信息
   const { user, refreshUserInfo } = useAuth();
@@ -414,6 +427,28 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
 
   const title =
     routeTitle || (subCategory ? `${category} · ${subCategory}` : category || '全部单词');
+  /** 切到下一个卡组后的临时标题（兄弟列表还没刷新回来时先用它） */
+  const [titleOverride, setTitleOverride] = useState<string | null>(null);
+
+  /** 顶层卡组名：拉取下一个卡组的单词时要作为 cat 回传给服务端 */
+  const topPackName = currentTopPack?.name || '';
+
+  /** 同一父卡组下的兄弟卡组：学完当前卡组后用来继续学习下一个 */
+  const [siblingPacks, setSiblingPacks] = useState<SiblingPack[]>([]);
+  /** 当前卡组在兄弟列表中的位置，-1 表示未知（不显示按钮） */
+  const [packCursor, setPackCursor] = useState(-1);
+  /** 正在拉取下一个卡组的单词 */
+  const [switchingPack, setSwitchingPack] = useState(false);
+
+  /**
+   * 标题优先跟随「当前卡组」：从背词页继续学习下一个卡组后返回，
+   * 列表标题也能同步成新的卡组名。
+   */
+  const currentSiblingTitle =
+    packCursor >= 0 && Number(siblingPacks[packCursor]?.id) === Number(listPackId)
+      ? siblingPacks[packCursor].name
+      : null;
+  const displayTitle = currentSiblingTitle || titleOverride || title;
 
   // 基础词汇池：source = 'today' 今日学习单词；'pack' 子卡组单词列表；默认全部词库
   const baseWords = useMemo(() => {
@@ -497,12 +532,113 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
       navigation.navigate('Flashcard', {
         wordIds: ids,
         startWordId: startWordId ?? ids[0],
-        title,
+        title: displayTitle,
         packId: packId ?? undefined,
+        // 背词页「继续学习下一个卡组」要按同样的来源拉取单词
+        listSource: source,
       });
     },
-    [studyWords, source, todayWordsPackId, packWordsPackId, title, navigation]
+    [studyWords, source, todayWordsPackId, packWordsPackId, displayTitle, navigation]
   );
+
+  /**
+   * 按父卡组反查兄弟卡组，支持「学习下一个卡组」。
+   * 顶层卡组或接口失败时静默降级为不显示该按钮。
+   */
+  useEffect(() => {
+    const currentPackId = Number(listPackId || 0);
+    if (!currentPackId) {
+      setSiblingPacks([]);
+      setPackCursor(-1);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await packLibrary.fetchPackDetail(currentPackId);
+        const parentId = Number((detail as any)?.parent_id || 0);
+        if (!parentId) {
+          if (!cancelled) {
+            setSiblingPacks([]);
+            setPackCursor(-1);
+          }
+          return;
+        }
+        const { packs } = await packLibrary.fetchSubPacks(parentId, { start: 0, limit: 200 });
+        if (cancelled || !packs.length) return;
+        setSiblingPacks(packs.map((p) => ({ id: Number(p.id), name: p.name })));
+        setPackCursor(packs.findIndex((p) => Number(p.id) === currentPackId));
+      } catch {
+        // 拿不到兄弟卡组就不提供「学习下一个卡组」
+        if (!cancelled) {
+          setSiblingPacks([]);
+          setPackCursor(-1);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [listPackId]);
+
+  /** 下一个待学习的兄弟卡组 */
+  const nextPack: SiblingPack | undefined =
+    packCursor >= 0 ? siblingPacks[packCursor + 1] : undefined;
+
+  /**
+   * 学习下一个卡组:
+   * 依次向后找第一个「还有未记住单词」的卡组，拉取它的单词后原地替换当前列表，
+   * 不进入背诵模式，用户继续在列表里挑词学习。
+   */
+  const handleStudyNextPack = async () => {
+    if (switchingPack || packCursor < 0) return;
+    setSwitchingPack(true);
+    try {
+      let cursor = packCursor + 1;
+      let target: SiblingPack | null = null;
+
+      while (cursor < siblingPacks.length) {
+        const pack = siblingPacks[cursor];
+        // 今日学习来源只取今日待学卡片；子卡组来源取整组单词（与打开列表时一致）
+        const list =
+          source === 'today'
+            ? await loadTodayWords(pack.id, {
+                start: 0,
+                limit: TODAY_WORD_LIMIT,
+                types: TODAY_WORD_TYPES,
+                cat: topPackName,
+                sub: pack.name,
+              })
+            : await loadPackWordList(pack.id, { cat: topPackName, sub: pack.name });
+        if (list.some((w) => !isMastered(w))) {
+          target = pack;
+          break;
+        }
+        cursor += 1;
+      }
+
+      if (!target) {
+        setDialog({
+          title: '太棒了',
+          message: '后面的卡组都没有待学习的单词了',
+          showCancel: false,
+        });
+        return;
+      }
+
+      // 单词已写进 store，列表会原地换成该卡组的数据
+      setTitleOverride(target.name);
+      showToast(`已切换到「${target.name}」`);
+    } catch (e: any) {
+      setDialog({
+        title: '加载失败',
+        message: e?.message || '获取下一个卡组的单词失败，请重试',
+        showCancel: false,
+      });
+    } finally {
+      setSwitchingPack(false);
+    }
+  };
 
   /** 会员限制的升级弹窗：一律走 ConfirmDialog */
   const showVipDialog = useCallback(
@@ -764,7 +900,7 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.root} ref={rootRef}>
         <Header
-          title={title}
+          title={displayTitle}
           subtitle={`共 ${baseWords.length} 词 · 已记住 ${masteredWords.length}`}
           onBack={() => navigation.goBack()}
           rightAction={{
@@ -834,6 +970,8 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
           /* 中部：未记住的单词列表 */
           <View style={styles.middleWrap}>
             <FlatList
+              // 切换卡组时重建，列表自动回到顶部
+              key={`pending-${listPackId ?? 'all'}`}
               data={pendingWords}
               keyExtractor={(item) => String(item.id)}
               renderItem={({ item }) => (
@@ -855,6 +993,41 @@ export const WordListScreen: React.FC<WordListScreenProps> = ({ route, navigatio
                   <Ionicons name="checkmark-done-circle" size={56} color={Colors.success} />
                   <Text style={styles.emptyTitle}>全部记住啦</Text>
                   <Text style={styles.emptyText}>当前列表的单词都已标记为已记住</Text>
+
+                  {/* 全部记住后可原地切换到下一个卡组继续学 */}
+                  {nextPack ? (
+                    <TouchableOpacity
+                      style={[styles.nextPackCard, switchingPack && styles.nextPackCardDisabled]}
+                      onPress={handleStudyNextPack}
+                      activeOpacity={0.85}
+                      disabled={switchingPack}
+                    >
+                      <View style={styles.nextPackIcon}>
+                        {switchingPack ? (
+                          <ActivityIndicator size="small" color={Colors.primary} />
+                        ) : (
+                          <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
+                        )}
+                      </View>
+
+                      <View style={styles.nextPackBody}>
+                        <Text style={styles.nextPackTitle}>
+                          {switchingPack ? '正在加载…' : '学习下一个卡组'}
+                        </Text>
+                        <Text
+                          style={styles.nextPackDesc}
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
+                        >
+                          下一个 · {nextPack.name}
+                        </Text>
+                      </View>
+
+                      {!switchingPack ? (
+                        <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
+                      ) : null}
+                    </TouchableOpacity>
+                  ) : null}
                 </View>
               }
             />
@@ -1248,6 +1421,56 @@ const styles = StyleSheet.create({
   emptyText: {
     marginTop: 6,
     fontSize: 13,
+    color: Colors.textMuted,
+  },
+  // 全部记住后的「学习下一个卡组」：卡片式入口
+  nextPackCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 22,
+    width: '84%',
+    maxWidth: 320,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primary + '2E',
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    elevation: 4,
+  },
+  nextPackCardDisabled: {
+    opacity: 0.6,
+  },
+  nextPackIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  nextPackBody: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  nextPackTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  nextPackDesc: {
+    marginTop: 3,
+    fontSize: 12,
     color: Colors.textMuted,
   },
 });

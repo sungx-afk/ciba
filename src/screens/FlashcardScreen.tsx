@@ -7,7 +7,6 @@ import {
   SafeAreaView,
   ScrollView,
   StatusBar,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,15 +15,13 @@ import { useProgress } from '../storage/progressStore';
 import { useAuth } from '../context/AuthContext';
 import { packLibrary } from '../services/packLibrary';
 import { Word } from '../types';
-import { Colors, getCategoryColor } from '../theme/colors';
+import { Colors } from '../theme/colors';
 import { pronounceWord } from '../utils/speech';
 import { showToast } from '../utils/toast';
 import { getWordExtras } from '../utils/wordExtras';
 import { playRememberedSound } from '../utils/effectSound';
 import { Header } from '../components/Header';
-import { ProgressBar } from '../components/ProgressBar';
 import { RichText } from '../components/RichText';
-import { SectionBadge } from '../components/SectionBadge';
 import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { checkVipGate, clearVipGateCache } from '../services/vipGate';
 
@@ -60,6 +57,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     packQueue,
     packIndex,
     hasMorePacks: hasMorePacksParam,
+    listSource,
   } = route.params || {};
   const {
     state,
@@ -70,6 +68,7 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     todayWords,
     packWords,
     loadTodayWords,
+    loadPackWordList,
     currentTopPack,
   } = useProgress();
   // 会员状态与注册时间都来自用户信息
@@ -231,7 +230,6 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     const idx = startWordId ? studyQueue.findIndex((w) => w.id === startWordId) : -1;
     return idx > 0 ? idx : 0;
   });
-  const [showAnswer, setShowAnswer] = useState(false);
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [learnedInSessionCount, setLearnedInSessionCount] = useState(0);
   // 正在上报本次评分，避免连点导致跳过多张卡片
@@ -244,8 +242,9 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
   const [dialog, setDialog] = useState<DialogPayload | null>(null);
 
   const currentWord = studyQueue[currentIndex];
-  const progressInfo = currentWord ? state.progressMap[currentWord.id] : undefined;
-  const isBookmarked = progressInfo?.isBookmarked || false;
+  const isBookmarked = currentWord
+    ? state.progressMap[currentWord.id]?.isBookmarked || false
+    : false;
 
   /** 单词深度解析：音标 / 词义辨析 / 巧记联想 / 场景例句 */
   const extras = useMemo(
@@ -282,6 +281,9 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       cancelled = true;
     };
   }, [packId, currentWord?.packageId, currentTopPack]);
+
+  /** 辨析正文：与 web 背诵页一致，数字条目 / <b> 先拆行再渲染 */
+  const packSummaryText = useMemo(() => formatPackSummary(packSummary), [packSummary]);
 
   /** 加入/取消生词本：加入会调服务端 /anki/movie2card，失败时不改本地状态 */
   const handleToggleBookmark = async (wordId: number, wordName?: string) => {
@@ -334,7 +336,6 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       setLearnedInSessionCount((prev) => prev + 1);
 
       if (currentIndex + 1 < studyQueue.length) {
-        setShowAnswer(false);
         setCurrentIndex((prev) => prev + 1);
       } else {
         setSessionCompleted(true);
@@ -417,16 +418,25 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       let cursor = packCursor + 1;
       let target: { pack: SiblingPack; words: Word[] } | null = null;
 
+      // 单词列表（子卡组）来源取整组单词；其它场景取今日待学卡片
+      const fromPackList = listSource === 'pack';
+
       while (cursor < siblingPacks.length) {
         const pack = siblingPacks[cursor];
-        const list = await loadTodayWords(pack.id, {
-          start: 0,
-          limit: TODAY_WORD_LIMIT,
-          types: TODAY_WORD_TYPES,
-          cat: topPackName,
-          sub: pack.name || '',
-        });
-        if (list.length) {
+        const list = fromPackList
+          ? await loadPackWordList(pack.id, { cat: topPackName, sub: pack.name || '' })
+          : await loadTodayWords(pack.id, {
+              start: 0,
+              limit: TODAY_WORD_LIMIT,
+              types: TODAY_WORD_TYPES,
+              cat: topPackName,
+              sub: pack.name || '',
+            });
+        // 整组单词里可能全是已记住的，这种卡组直接跳过
+        const learnable = fromPackList
+          ? list.some((w) => w.type !== 4 && state.progressMap[w.id]?.status !== 'mastered')
+          : list.length > 0;
+        if (learnable) {
           target = { pack, words: list };
           break;
         }
@@ -437,7 +447,10 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         setPackCursor(siblingPacks.length); // 标记已到末尾，按钮转为提示
         setDialog({
           title: '太棒了',
-          message: '后面的卡组今日都没有待学习的单词',
+          message:
+            listSource === 'pack'
+              ? '后面的卡组都没有待学习的单词'
+              : '后面的卡组今日都没有待学习的单词',
           showCancel: false,
         });
         return;
@@ -449,7 +462,6 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
       setPackCursor(cursor);
       setSessionTitle(target.pack.name);
       setCurrentIndex(0);
-      setShowAnswer(false);
       setLearnedInSessionCount(0);
       setSessionCompleted(false);
     } catch (e: any) {
@@ -561,17 +573,20 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
     );
   }
 
-  const catColor = getCategoryColor(currentWord.cat);
-  const queueProgress = (currentIndex + 1) / studyQueue.length;
+  /** 词头音标：服务端给的可能是「pruːv」这种裸音标，统一补上斜杠 */
+  const phoneticText = extras.phonetic
+    ? extras.phonetic.startsWith('/') || extras.phonetic.startsWith('[')
+      ? extras.phonetic
+      : `/${extras.phonetic}/`
+    : '';
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
-      
-      {/* 顶部导航与进度 */}
+      <StatusBar barStyle="dark-content" backgroundColor={Colors.card} />
+
+      {/* 顶部：单词 + 学习进度（与 web 背诵页一致的一行式标题） */}
       <Header
-        title={sessionTitle || category || '背单词'}
-        subtitle={`${currentIndex + 1} / ${studyQueue.length}`}
+        title={`单词 ${currentIndex + 1} / ${studyQueue.length}`}
         onBack={() => navigation.goBack()}
         rightAction={{
           icon: isBookmarked ? 'bookmark' : 'bookmark-outline',
@@ -579,204 +594,131 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
         }}
       />
 
-      <View style={styles.progressBarWrap}>
-        <ProgressBar progress={queueProgress} height={4} color={Colors.primary} />
+      {/* 固定词头：单词 / 音标 / 发音，不随内容滚动 */}
+      <View style={styles.wordHead}>
+        <Text style={styles.mainWordText}>{currentWord.word}</Text>
+        {phoneticText ? <Text style={styles.wordPhonetic}>{phoneticText}</Text> : null}
+        <TouchableOpacity
+          style={styles.soundButton}
+          onPress={handleManualPronounce}
+          activeOpacity={0.7}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="volume-medium-outline" size={22} color={Colors.primary} />
+        </TouchableOpacity>
       </View>
+
+      <View style={styles.hairline} />
 
       <ScrollView
         style={styles.contentScroll}
         contentContainerStyle={styles.scrollInner}
         showsVerticalScrollIndicator={false}
       >
-        {/* 闪卡卡片主体 */}
-        <TouchableOpacity
-          style={styles.cardBox}
-          activeOpacity={0.95}
-          onPress={() => setShowAnswer(!showAnswer)}
-        >
-          {/* 标签栏 */}
-          <View style={styles.cardHeaderRow}>
-            <View style={[styles.catTag, { backgroundColor: catColor + '18' }]}>
-              <View style={[styles.catDot, { backgroundColor: catColor }]} />
-              <Text style={[styles.catText, { color: catColor }]} numberOfLines={1}>
-                {currentWord.cat}
-              </Text>
-            </View>
-            {currentWord.sub ? (
-              <View style={styles.subTag}>
-                <Text style={styles.subText} numberOfLines={1} ellipsizeMode="tail">
-                  {currentWord.sub}
-                </Text>
-              </View>
-            ) : null}
-
-            {progressInfo?.status === 'mastered' ? (
-              <View style={styles.statusTag}>
-                <Text style={styles.statusText}>已掌握</Text>
-              </View>
-            ) : null}
+        {/* 中文释义 */}
+        {currentWord.meaning ? (
+          <View style={styles.sectionBlock}>
+            <RichText text={currentWord.meaning} style={styles.textMeaning} />
           </View>
+        ) : null}
 
-          {/* 核心单词大字 */}
-          <View style={styles.wordCenter}>
-            <Text style={styles.mainWordText}>{currentWord.word}</Text>
-            {extras.phonetic ? (
-              <Text style={styles.wordPhonetic}>{extras.phonetic}</Text>
-            ) : null}
-            <TouchableOpacity
-              style={styles.soundButton}
-              onPress={handleManualPronounce}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="volume-high" size={24} color={Colors.primary} />
-              <Text style={styles.soundHint}>点击发音</Text>
-            </TouchableOpacity>
+        {/* 词义辨析 */}
+        {extras.wordDifference ? (
+          <View style={[styles.sectionBlock, styles.sectionBlockDivider]}>
+            <Text style={styles.sectionLabel}>词义辨析：</Text>
+            <RichText
+              text={extras.wordDifference}
+              style={styles.textContent}
+              boldStyle={styles.boldStrong}
+            />
           </View>
+        ) : null}
 
-          {/* 翻转查看释义按钮或答案展开区 */}
-          {!showAnswer ? (
-            <View style={styles.tapToReveal}>
-              <Ionicons name="eye-outline" size={20} color={Colors.textMuted} />
-              <Text style={styles.tapToRevealText}>点击卡片查看释义、辨析与巧记</Text>
-            </View>
-          ) : (
-            <View style={styles.answerSection}>
-              <View style={styles.dividerLine} />
+        {/* 记忆方法 */}
+        {extras.memoryMethod ? (
+          <View style={[styles.sectionBlock, styles.sectionBlockDivider]}>
+            <Text style={styles.sectionLabel}>记忆方法：</Text>
+            <RichText
+              text={extras.memoryMethod}
+              style={styles.textContent}
+              boldStyle={styles.boldStrong}
+            />
+          </View>
+        ) : null}
 
-              {/* 1. 核心中文释义 */}
-              {currentWord.meaning ? (
-                <View style={styles.bentoSection}>
-                  <SectionBadge icon="pricetag-outline" label="核心释义" color={Colors.primary} />
-                  <RichText text={currentWord.meaning} style={styles.textMeaning} />
-                </View>
-              ) : null}
-
-              {/* 2. 词义辨析 / 用法区别 */}
-              {extras.wordDifference ? (
-                <View style={styles.bentoSection}>
-                  <SectionBadge icon="git-compare-outline" label="词义辨析" color={Colors.dark} />
+        {/* 例句 */}
+        {extras.sentences.length ? (
+          <View style={[styles.sectionBlock, styles.sectionBlockDivider]}>
+            <Text style={styles.sectionLabel}>例句：</Text>
+            {extras.sentences.map((s, idx) => (
+              <View key={idx} style={styles.sentenceItem}>
+                {s.english ? (
                   <RichText
-                    text={extras.wordDifference}
-                    style={styles.textContent}
+                    text={s.english}
+                    style={styles.enSentence}
                     boldStyle={styles.boldStrong}
                   />
-                </View>
-              ) : null}
+                ) : null}
+                {s.chinese ? <RichText text={s.chinese} style={styles.cnSentence} /> : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
 
-              {/* 3. 巧记联想 / 记忆技巧 */}
-              {extras.memoryMethod ? (
-                <View style={styles.bentoSection}>
-                  <SectionBadge icon="bulb-outline" label="巧记联想" color={Colors.accent} />
-                  <View style={styles.memoryInner}>
-                    <RichText
-                      text={extras.memoryMethod}
-                      style={styles.textContent}
-                      boldStyle={styles.boldStrong}
-                    />
-                  </View>
-                </View>
-              ) : null}
+        {/* 分类词汇辨析（卡组级内容）：样式对齐 web 背诵页 Review.vue 的 pack-summary-wrapper */}
+        {packSummary ? (
+          <View style={styles.summaryCard}>
+            <Text style={styles.summaryTitle}>分类词汇辨析</Text>
+            <RichText
+              text={packSummaryText}
+              style={styles.summaryText}
+              boldStyle={styles.boldStrong}
+            />
+          </View>
+        ) : null}
 
-              {/* 4. 双语场景例句 */}
-              {extras.sentences.length ? (
-                <View style={styles.bentoSection}>
-                  <SectionBadge
-                    icon="chatbubble-ellipses-outline"
-                    label="场景例句"
-                    color={Colors.secondary}
-                  />
-                  <View style={styles.sentencesList}>
-                    {extras.sentences.map((s, idx) => (
-                      <View key={idx} style={styles.sentenceItem}>
-                        {s.english ? (
-                          <RichText
-                            text={s.english}
-                            style={styles.enSentence}
-                            boldStyle={styles.boldStrong}
-                          />
-                        ) : null}
-                        {s.chinese ? (
-                          <RichText text={s.chinese} style={styles.cnSentence} />
-                        ) : null}
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              ) : null}
-
-              {/* 5. 词包全局分类词汇辨析 */}
-              {packSummary ? (
-                <View style={styles.bentoSection}>
-                  <SectionBadge
-                    icon="library-outline"
-                    label="分类词汇辨析"
-                    color={Colors.pinwheelBlue}
-                  />
-                  <View style={styles.summaryInner}>
-                    <RichText
-                      text={packSummary}
-                      style={styles.textContent}
-                      boldStyle={styles.boldStrong}
-                    />
-                  </View>
-                </View>
-              ) : null}
-
-              {/* 兜底：没有任何结构化信息时仍显示原始 note */}
-              {!extras.wordDifference &&
-              !extras.memoryMethod &&
-              !extras.sentences.length &&
-              currentWord.note ? (
-                <View style={styles.bentoSection}>
-                  <SectionBadge
-                    icon="bulb-outline"
-                    label="助记与例句"
-                    color={Colors.textSecondary}
-                  />
-                  <RichText text={currentWord.note} style={styles.textContent} />
-                </View>
-              ) : null}
-            </View>
-          )}
-        </TouchableOpacity>
+        {/* 兜底：没有任何结构化信息时仍显示原始 note */}
+        {!extras.wordDifference &&
+        !extras.memoryMethod &&
+        !extras.sentences.length &&
+        currentWord.note ? (
+          <View style={[styles.sectionBlock, styles.sectionBlockDivider]}>
+            <RichText text={currentWord.note} style={styles.textContent} />
+          </View>
+        ) : null}
       </ScrollView>
 
       {/* 底部操作栏: 返回 / 明天复习(type=1) / 已记住(type=4) */}
       <View style={styles.bottomBar}>
-        <View style={styles.actionRow}>
-          <TouchableOpacity
-            style={[styles.actionBtn, styles.backAction]}
-            onPress={() => navigation.goBack()}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={18} color={Colors.textSecondary} />
-            <Text style={[styles.actionBtnText, styles.backActionText]}>返回</Text>
-          </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.actionBtn, styles.backAction]}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.85}
+        >
+          <Text style={[styles.actionBtnText, styles.backActionText]}>返回</Text>
+        </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.actionBtn, styles.tomorrowAction, grading && styles.actionBtnDisabled]}
-            onPress={() => handleGrade('hard')}
-            activeOpacity={0.85}
-            disabled={grading}
-          >
-            <Ionicons name="time-outline" size={18} color={Colors.primary} />
-            <Text style={[styles.actionBtnText, styles.tomorrowActionText]}>明天复习</Text>
-          </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.actionBtn, styles.tomorrowAction, grading && styles.actionBtnDisabled]}
+          onPress={() => handleGrade('hard')}
+          activeOpacity={0.85}
+          disabled={grading}
+        >
+          <Text style={[styles.actionBtnText, styles.tomorrowActionText]}>明天复习</Text>
+        </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.actionBtn, styles.rememberAction, grading && styles.actionBtnDisabled]}
-            onPress={() => handleGrade('remembered')}
-            activeOpacity={0.85}
-            disabled={grading}
-          >
-            {grading ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
-            )}
+        <TouchableOpacity
+          style={[styles.actionBtn, styles.rememberAction, grading && styles.actionBtnDisabled]}
+          onPress={() => handleGrade('remembered')}
+          activeOpacity={0.85}
+          disabled={grading}
+        >
+          {grading ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
             <Text style={[styles.actionBtnText, styles.rememberActionText]}>已记住</Text>
-          </TouchableOpacity>
-        </View>
+          )}
+        </TouchableOpacity>
       </View>
 
       <ConfirmDialog
@@ -810,256 +752,172 @@ export const FlashcardScreen: React.FC<FlashcardScreenProps> = ({ route, navigat
   );
 };
 
+/**
+ * 「分类词汇辨析」正文预处理，与 web 背诵页 Review.vue 的 formatText 保持一致：
+ * 数字条目与 <b> 前后补换行，去掉多余空行（<br> / <p> 由其后的 RichText 继续处理）。
+ */
+function formatPackSummary(raw: string): string {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/(\d+\.)/g, '\n$1')
+    .replace(/(<b>)/g, '\n$1')
+    .replace(/(<\/b>)/g, '$1\n')
+    .replace(/\n+/g, '\n')
+    .trim();
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
-  },
-  progressBarWrap: {
-    width: '100%',
+    backgroundColor: Colors.card,
   },
   contentScroll: {
     flex: 1,
+    backgroundColor: Colors.card,
   },
-  // 解析内容较多时不能居中，否则顶部会被裁切且无法滚动，改为从顶部排布
+  // 内容较多时从顶部排布，整页白底、不再套卡片
   scrollInner: {
-    padding: 16,
-    paddingBottom: 88,
+    paddingBottom: 24,
     flexGrow: 1,
     justifyContent: 'flex-start',
   },
-  cardBox: {
+  // 固定词头：单词 / 音标 / 发音图标居中，滚动时保持不动
+  wordHead: {
+    alignItems: 'center',
+    flexShrink: 0,
     backgroundColor: Colors.card,
-    borderRadius: 20,
-    padding: 24,
-    minHeight: 380,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 4,
-    justifyContent: 'space-between',
-  },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'nowrap',
-    gap: 8,
-  },
-  catTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 0,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  catDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 6,
-  },
-  catText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  subTag: {
-    flexShrink: 1,
-    minWidth: 0,
-    backgroundColor: Colors.divider,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  subText: {
-    flexShrink: 1,
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  statusTag: {
-    marginLeft: 'auto',
-    flexShrink: 0,
-    backgroundColor: Colors.success + '15',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  statusText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  wordCenter: {
-    alignItems: 'center',
-    marginVertical: 30,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
   },
   mainWordText: {
-    fontSize: 38,
-    fontWeight: '800',
+    fontSize: 32,
+    fontWeight: '700',
     color: Colors.textPrimary,
     textAlign: 'center',
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   },
   wordPhonetic: {
-    fontSize: 15,
+    fontSize: 14,
     color: Colors.textTertiary,
     textAlign: 'center',
-    marginTop: 6,
+    marginTop: 8,
   },
   soundButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginTop: 16,
-    gap: 6,
-  },
-  soundHint: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  tapToReveal: {
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Colors.background,
-    paddingVertical: 14,
-    borderRadius: 12,
-    gap: 8,
-  },
-  tapToRevealText: {
-    fontSize: 13,
-    color: Colors.textMuted,
-    fontWeight: '500',
-  },
-  answerSection: {
     marginTop: 10,
+    padding: 4,
   },
-  dividerLine: {
-    height: 1,
+  // 全宽细分隔线（贴边，与 web 背诵页一致）
+  hairline: {
+    height: StyleSheet.hairlineWidth,
     backgroundColor: Colors.divider,
-    marginBottom: 12,
   },
-  // 解析分区：白底圆角卡片 + 彩色小标题，参照 ciba-pc 单词研读
-  bentoSection: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
+  sectionBlock: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+  },
+  sectionBlockDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.divider,
+  },
+  // 分区标题：「词义辨析：」「记忆方法：」「例句：」单独一行
+  sectionLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginBottom: 8,
   },
   textMeaning: {
     fontSize: 15,
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    lineHeight: 22,
+    fontWeight: '500',
+    color: Colors.textSecondary,
+    lineHeight: 24,
   },
   textContent: {
-    fontSize: 13,
+    fontSize: 14,
     color: Colors.textSecondary,
-    lineHeight: 20,
+    lineHeight: 23,
   },
   /** <b> 提升为加粗标题行时的强调色 */
   boldStrong: {
     color: Colors.textPrimary,
   },
-  memoryInner: {
-    backgroundColor: Colors.accent + '14',
+  // 分类词汇辨析：浅底卡片 + 居中标题，对齐 web 背诵页 Review.vue
+  summaryCard: {
+    backgroundColor: Colors.backgroundAlt,
     borderWidth: 1,
-    borderColor: Colors.accent + '40',
-    borderRadius: 8,
-    padding: 10,
+    borderColor: Colors.border,
+    borderRadius: 12,
+    padding: 14,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
   },
-  sentencesList: {
-    gap: 8,
+  summaryTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  summaryText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    lineHeight: 23,
   },
   sentenceItem: {
-    padding: 10,
-    backgroundColor: Colors.background,
-    borderRadius: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: Colors.primary,
+    marginBottom: 12,
   },
   enSentence: {
-    fontSize: 13.5,
+    fontSize: 14,
     fontWeight: '600',
     color: Colors.textPrimary,
-    lineHeight: 19,
+    lineHeight: 21,
   },
   cnSentence: {
-    fontSize: 12.5,
-    color: Colors.textSecondary,
-    lineHeight: 18,
+    fontSize: 13,
+    color: Colors.textTertiary,
+    lineHeight: 20,
     marginTop: 3,
   },
-  summaryInner: {
-    backgroundColor: Colors.primaryLight,
-    borderWidth: 1,
-    borderColor: Colors.primary + '33',
-    borderRadius: 8,
-    padding: 10,
-  },
+  // 底部三个操作按钮: 返回 / 明天复习(type=1) / 已记住(type=4)，平铺无圆角
   bottomBar: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 12,
+    flexDirection: 'row',
     backgroundColor: Colors.card,
-    borderTopWidth: 1,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.border,
   },
-  // 底部三个操作按钮: 返回 / 明天复习(type=1) / 已记住(type=4)
-  actionRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
   actionBtn: {
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 14,
-    borderRadius: 14,
-    borderWidth: 1,
+    paddingVertical: 16,
   },
   actionBtnDisabled: {
     opacity: 0.6,
   },
   actionBtnText: {
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '700',
   },
   backAction: {
-    flex: 0.85,
-    backgroundColor: Colors.background,
-    borderColor: Colors.border,
+    flex: 1,
+    backgroundColor: Colors.backgroundAlt,
   },
   backActionText: {
     color: Colors.textSecondary,
   },
   tomorrowAction: {
-    flex: 1.32,
-    backgroundColor: Colors.primary + '12',
-    borderColor: Colors.primary + '30',
+    flex: 1.5,
+    backgroundColor: Colors.primary,
   },
   tomorrowActionText: {
-    color: Colors.primary,
+    color: '#FFFFFF',
   },
   rememberAction: {
-    flex: 1.32,
+    flex: 1.5,
     backgroundColor: Colors.success,
-    borderColor: Colors.success,
-    shadowColor: Colors.success,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.28,
-    shadowRadius: 8,
-    elevation: 4,
   },
   rememberActionText: {
     color: '#FFFFFF',

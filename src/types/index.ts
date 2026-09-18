@@ -10,12 +10,22 @@ export interface Word {
   word: string;
   meaning: string;
   note: string;
+  /** 远程 note id，删除卡片要按 note 删除（DELETE /anki/note/{id}.json） */
+  noteId?: number;
   /** 远程卡组 id，用于学习结果上报 */
   packageId?: number;
   /** 远程卡片学习状态：0 未学 / 1、2、3 学习中 / 4 已记住（已掌握） */
   type?: number;
   /** 音标（服务端卡片 note.data.phonetic） */
   phonetic?: string;
+  /** 英式音标（生词本卡片 note.data 第 2 段） */
+  phoneticEn?: string;
+  /** 美式音标（生词本卡片 note.data 第 4 段） */
+  phoneticAm?: string;
+  /** 词频（COCA 词频，0 表示无数据） */
+  frequence?: number;
+  /** 该卡片累计复习次数（服务端 card.times） */
+  times?: number;
   /** 词义辨析 / 用法区别（note.data.word_difference） */
   wordDifference?: string;
   /** 巧记联想 / 记忆技巧（note.data.memory_method） */
