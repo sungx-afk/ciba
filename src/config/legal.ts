@@ -4,5 +4,5 @@
  */
 
 // TODO: 用户协议与隐私政策暂时指向同一页面，后续拆成各自的地址
-export const AGREEMENT_URL = 'https://cibaen.com/privacy-policy.html';
-export const POLICY_URL = 'https://cibaen.com/privacy-policy.html';
+export const AGREEMENT_URL = 'https://cibaen.com/ciba_category_legal/user_agreement.html';
+export const POLICY_URL = 'https://cibaen.com/ciba_category_legal/privacy_policy.html';
