@@ -1153,10 +1153,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
           />
         </View>
         <View style={styles.brandTextWrap}>
-          <Text style={styles.brandTitle}>糍粑英语</Text>
-          <Text style={styles.brandPackName} numberOfLines={1}>
-            {selectedTop?.name || lastPackName || currentPack?.name || '我的卡组'}
-          </Text>
+          <Text style={styles.brandTitle}>糍粑分类背单词</Text>
         </View>
       </View>
 
@@ -1238,7 +1235,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
             </View>
             <View style={styles.dashProgressMeta}>
               <Text style={styles.dashProgressMetaText}>
-                已掌握 {packAgg.remembered}/{packAgg.total} 词
+                已掌握 {packAgg.remembered} 词
               </Text>
               <Text style={styles.dashProgressMetaText}>
                 共 {learningTotal ?? learningPacks.length} 个未记住分类卡组

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -96,6 +96,40 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
     setLogoutVisible(true);
   };
 
+  /**
+   * 调试入口：连点 3 次用户名弹出当前账号的用户 ID，方便反馈问题时定位账号。
+   * 超过 1.5 秒没有继续点就重新计数，避免平时误触弹出。
+   */
+  const nameTapCountRef = useRef(0);
+  const nameTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleUserNameTap = () => {
+    if (nameTapTimerRef.current) clearTimeout(nameTapTimerRef.current);
+    nameTapCountRef.current += 1;
+    nameTapTimerRef.current = setTimeout(() => {
+      nameTapCountRef.current = 0;
+    }, 1500);
+
+    if (nameTapCountRef.current < 3) return;
+    nameTapCountRef.current = 0;
+    if (nameTapTimerRef.current) clearTimeout(nameTapTimerRef.current);
+
+    setDialog({
+      title: '用户信息',
+      message: `用户 ID：${user?.id ?? '未登录'}`,
+      confirmText: '知道了',
+      showCancel: false,
+      onConfirm: () => setDialog(null),
+    });
+  };
+
+  // 离开页面时清掉连点计时器
+  useEffect(
+    () => () => {
+      if (nameTapTimerRef.current) clearTimeout(nameTapTimerRef.current);
+    },
+    []
+  );
+
   const confirmLogout = async () => {
     setLogoutVisible(false);
     try {
@@ -118,7 +152,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           </View>
           <View style={styles.userInfo}>
             <View style={styles.userNameRow}>
-              <Text style={styles.userName} numberOfLines={1}>
+              <Text style={styles.userName} numberOfLines={1} onPress={handleUserNameTap}>
                 {isLoggedIn ? user?.nickname || user?.loginName || maskMobile(user?.mobile) || '糍粑学员' : '未登录'}
               </Text>
               {isLoggedIn && (

@@ -248,21 +248,24 @@ const WordRow: React.FC<WordRowProps> = ({ word, showDetail, accent, onPress, on
       <TouchableOpacity style={styles.cardInner} onPress={onPress} activeOpacity={0.7}>
         <View style={styles.cardMainRow}>
           <View style={styles.titleWrap}>
-            <Text style={styles.cardTitle} numberOfLines={2}>
-              {word.word}
-            </Text>
+            <View style={styles.titleLine}>
+              <Text style={styles.cardTitle} numberOfLines={2}>
+                {word.word}
+              </Text>
+              <TouchableOpacity
+                style={styles.soundBtn}
+                onPress={handlePronounce}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="volume-medium-outline" size={18} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+            {/* 音标单独一行，长单词或长音标都不会把标题挤变形 */}
             {phonetic ? (
               <Text style={styles.titlePhonetic} numberOfLines={1}>
                 {phonetic}
               </Text>
             ) : null}
-            <TouchableOpacity
-              style={styles.soundBtn}
-              onPress={handlePronounce}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name="volume-medium-outline" size={18} color={Colors.primary} />
-            </TouchableOpacity>
           </View>
 
           <View style={styles.actionRow}>
@@ -680,7 +683,7 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
           }}
         />
 
-        {/* 顶部操作条：左侧为列表分组标签，右侧显示/隐藏词义 + 全部记住 */}
+        {/* 顶部操作条：左侧为列表分组标签，右侧显示/隐藏词义 */}
         <View style={styles.topBar}>
           <View style={styles.segmentWrap}>
             <View style={[styles.segment, styles.segmentActive]}>
@@ -703,22 +706,7 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
                 词义
               </Text>
             </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.primaryBtn, markAll.running && styles.primaryBtnDisabled]}
-              onPress={handleMarkAll}
-              activeOpacity={0.85}
-              disabled={markAll.running}
-            >
-              {markAll.running ? (
-                <>
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                  <Text style={styles.primaryBtnText}>标记中 {markAll.total} 词</Text>
-                </>
-              ) : (
-                <Text style={styles.primaryBtnText}>全部记住</Text>
-              )}
-            </TouchableOpacity>
+            {/* 「全部记住」入口暂时下掉，批量标记的逻辑仍保留在 runMarkAll */}
           </View>
         </View>
 
@@ -986,10 +974,13 @@ const styles = StyleSheet.create({
   },
   titleWrap: {
     flex: 1,
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  titleLine: {
     flexDirection: 'row',
     alignItems: 'center',
     minWidth: 0,
-    paddingRight: 8,
   },
   cardTitle: {
     flexShrink: 1,
@@ -999,9 +990,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   titlePhonetic: {
-    flexShrink: 1,
-    marginLeft: 8,
+    marginTop: 2,
     fontSize: 13,
+    lineHeight: 18,
     color: Colors.primary,
   },
   soundBtn: {

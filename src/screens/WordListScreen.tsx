@@ -302,21 +302,24 @@ const WordRow: React.FC<WordRowProps> = ({
       <TouchableOpacity style={styles.cardInner} onPress={onPress} activeOpacity={0.7}>
         <View style={styles.cardMainRow}>
           <View style={styles.titleWrap}>
-            <Text style={[styles.cardTitle, isMeaningMode && styles.cardTitleCn]} numberOfLines={2}>
-              {titleText}
-            </Text>
+            <View style={styles.titleLine}>
+              <Text style={[styles.cardTitle, isMeaningMode && styles.cardTitleCn]} numberOfLines={2}>
+                {titleText}
+              </Text>
+              <TouchableOpacity
+                style={styles.soundBtn}
+                onPress={(e) => handlePronounce(e)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="volume-medium-outline" size={18} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+            {/* 音标单独一行，长单词或长音标都不会把标题挤变形 */}
             {phonetic ? (
               <Text style={styles.titlePhonetic} numberOfLines={1}>
                 {phonetic}
               </Text>
             ) : null}
-            <TouchableOpacity
-              style={styles.soundBtn}
-              onPress={(e) => handlePronounce(e)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name="volume-medium-outline" size={18} color={Colors.primary} />
-            </TouchableOpacity>
           </View>
 
           <View style={styles.actionRow}>
@@ -1068,10 +1071,13 @@ const styles = StyleSheet.create({
   },
   titleWrap: {
     flex: 1,
+    minWidth: 0,
+    paddingRight: 8,
+  },
+  titleLine: {
     flexDirection: 'row',
     alignItems: 'center',
     minWidth: 0,
-    paddingRight: 8,
   },
   cardTitle: {
     flexShrink: 1,
@@ -1085,9 +1091,9 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   titlePhonetic: {
-    flexShrink: 1,
-    marginLeft: 8,
+    marginTop: 2,
     fontSize: 13,
+    lineHeight: 18,
     color: Colors.primary,
   },
   soundBtn: {
