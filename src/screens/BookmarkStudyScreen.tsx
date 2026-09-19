@@ -181,6 +181,12 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   const [sheetVisible, setSheetVisible] = useState(false);
   /** 卡片设置面板 */
   const [settingsVisible, setSettingsVisible] = useState(false);
+  /**
+   * 设置面板里的保存失败提示。
+   * 不弹 ConfirmDialog：那样会变成「设置面板 Modal 还开着又要 present 一个 Modal」，
+   * iOS 上两个 Modal 叠着 present 会把层级搞乱，表现为弹不出来甚至整页点不动。
+   */
+  const [settingError, setSettingError] = useState('');
   /** 学习过程自定义（本地设置）：显示答案 / 自动播放问题语音 / 自动播放答案语音 */
   const [studySetting, setStudySetting] = useState<StudySetting>(DEFAULT_STUDY_SETTING);
   /** 换到下一张时是否直接展开答案（由 studySetting.show_answer 派生） */
@@ -418,41 +424,6 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     }
   }, []);
 
-  /** 菜单关闭后待执行的动作：iOS 上同一帧关一个 Modal 再开另一个，第二个常常不显示 */
-  const pendingSheetActionRef = useRef<(() => void) | null>(null);
-  const sheetCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /** 立即执行菜单关闭后挂起的动作（iOS 由 Modal.onDismiss 触发） */
-  const flushSheetAction = useCallback(() => {
-    if (sheetCloseTimerRef.current) {
-      clearTimeout(sheetCloseTimerRef.current);
-      sheetCloseTimerRef.current = null;
-    }
-    const action = pendingSheetActionRef.current;
-    pendingSheetActionRef.current = null;
-    action?.();
-  }, []);
-
-  /** 先关菜单，等它消失后再执行动作 */
-  const runAfterSheetClose = useCallback(
-    (action: () => void) => {
-      pendingSheetActionRef.current = action;
-      setSheetVisible(false);
-      if (sheetCloseTimerRef.current) clearTimeout(sheetCloseTimerRef.current);
-      // onDismiss 在部分平台/版本不会回调，用定时器兜底，时长覆盖菜单消失动画
-      sheetCloseTimerRef.current = setTimeout(flushSheetAction, 320);
-    },
-    [flushSheetAction]
-  );
-
-  // 离开页面时清掉可能还没跑的定时器
-  useEffect(
-    () => () => {
-      if (sheetCloseTimerRef.current) clearTimeout(sheetCloseTimerRef.current);
-    },
-    []
-  );
-
   /** 打开设置面板：把当前配置灌进草稿，点「确定」才生效 */
   const handleOpenSetting = () => {
     setDraftDayLimit(String(packBtns.day_limit || DEFAULT_PACK_BTNS_SETTING.day_limit));
@@ -462,25 +433,29 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     });
     setDraftDays(days);
     setDraftSetting({ ...studySetting });
+    setSettingError('');
     setSettingsVisible(true);
   };
 
-  /** 右上角动作菜单：删除卡片 / 设置（都要等菜单消失后再开新的弹层） */
+  /**
+   * 右上角动作菜单：删除卡片 / 设置。
+   * 菜单本身是页面内的浮层（不是 Modal），所以这里可以关掉菜单后直接开新弹层，
+   * 不存在 iOS 上「关一个 Modal 再 present 另一个」被吞掉、点了没反应的问题。
+   */
   const handleSheetSelect = (key: string) => {
+    setSheetVisible(false);
     if (key === 'setting') {
-      runAfterSheetClose(handleOpenSetting);
+      handleOpenSetting();
       return;
     }
     if (key === 'delete') {
-      runAfterSheetClose(() => {
-        setDialog({
-          title: '删除卡片',
-          message: '确定要删除该卡片吗?',
-          confirmText: '删除',
-          onConfirm: () => {
-            void handleDeleteCard();
-          },
-        });
+      setDialog({
+        title: '删除卡片',
+        message: '确定要删除该卡片吗?',
+        confirmText: '删除',
+        onConfirm: () => {
+          void handleDeleteCard();
+        },
       });
     }
   };
@@ -557,6 +532,7 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     }
 
     setSavingSetting(true);
+    setSettingError('');
     try {
       const prevBtnSetting = packConfRef.current.pack_btns_setting || {};
       const btns = packBtns.btns.map((btn) => {
@@ -584,11 +560,8 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
       setSettingsVisible(false);
       showToast('修改成功');
     } catch (e: any) {
-      setDialog({
-        title: '保存失败',
-        message: e?.message || '设置保存失败，请稍后重试',
-        showCancel: false,
-      });
+      // 面板保持打开，错误就地显示，方便直接改完再试
+      setSettingError(e?.message || '设置保存失败，请稍后重试');
     } finally {
       setSavingSetting(false);
     }
@@ -1109,6 +1082,9 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
               </View>
             </ScrollView>
 
+            {/* 保存失败提示就地显示，不叠第二层弹窗 */}
+            {settingError ? <Text style={styles.settingErrorText}>{settingError}</Text> : null}
+
             {/* 底部：取消 / 确定，「确定」才写回卡组与本地 */}
             <View style={styles.settingFooter}>
               <TouchableOpacity
@@ -1148,7 +1124,6 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
         ]}
         onSelect={handleSheetSelect}
         onClose={() => setSheetVisible(false)}
-        onDismiss={flushSheetAction}
       />
 
       <ConfirmDialog
@@ -1501,6 +1476,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: Colors.textSecondary,
+  },
+  // 保存失败就地提示：面板底部一行红字，避免为了提示再叠一个 Modal
+  settingErrorText: {
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    fontSize: 13,
+    color: Colors.danger,
   },
   settingFooterConfirm: {
     backgroundColor: Colors.primary,
