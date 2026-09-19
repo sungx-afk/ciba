@@ -214,8 +214,10 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
               {line}
             </Text>
           ))}
-          <Text style={styles.helpPrompt}>请选择需要的词库</Text>
         </View>
+
+        {/* 提示独立放在说明卡片外，避免读成卡片内容 */}
+        <Text style={styles.helpPrompt}>请选择需要的词库</Text>
 
         {/* 词库网格 */}
         {loading && packs.length === 0 ? (
@@ -335,6 +337,7 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: Colors.textSecondary,
   },
+  // 说明卡片外的提示语：与卡片、网格各留 16 间距
   helpPrompt: {
     marginTop: 16,
     fontSize: 14,

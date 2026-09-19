@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -9,6 +10,7 @@ import {
   Alert,
   SafeAreaView,
   Share,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProgress } from '../storage/progressStore';
@@ -16,6 +18,12 @@ import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
 import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
+import {
+  fetchNotebookDayLimit,
+  saveNotebookDayLimit,
+  NOTEBOOK_DAY_LIMIT_OPTIONS,
+  NOTEBOOK_DAY_LIMIT_MAX,
+} from '../services/bookmarkApi';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -33,6 +41,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [logoutVisible, setLogoutVisible] = useState(false);
   /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
   const [dialog, setDialog] = useState<DialogPayload | null>(null);
+
+  /**
+   * 生词本学习目标：即生词本设置里的「每日添加新学习卡片数量」，
+   * 存在生词本卡组 conf.pack_btns_setting.day_limit（服务端字段，非本地设置）。
+   */
+  const [dayLimit, setDayLimit] = useState(0);
+  const [loadingDayLimit, setLoadingDayLimit] = useState(true);
+  const [savingDayLimit, setSavingDayLimit] = useState(false);
+  /** 自定义输入框里的值；在别处（如生词本学习页）设成非档位数字时回填到这里 */
+  const [customLimit, setCustomLimit] = useState('');
 
   // 当前使用的词库: 与首页顶部「我的卡组」共用同一份 currentTopPack
   const [rememberedPackName, setRememberedPackName] = useState<string | null>(null);
@@ -56,6 +74,81 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const maskMobile = (m?: string) => {
     if (!m) return '';
     return m.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2');
+  };
+
+  /** 读取生词本每日学习目标 */
+  const loadDayLimit = useCallback(async () => {
+    setLoadingDayLimit(true);
+    try {
+      const limit = await fetchNotebookDayLimit();
+      setDayLimit(limit);
+    } catch {
+      // 取不到（未登录或网络问题）时保持 0，卡片仍可点，点了会提示
+      setDayLimit(0);
+    } finally {
+      setLoadingDayLimit(false);
+    }
+  }, []);
+
+  /** 进页面/登录态变化时读取生词本每日学习目标 */
+  useEffect(() => {
+    loadDayLimit();
+  }, [isLoggedIn, loadDayLimit]);
+
+  // 每次切回「我的」tab 都重新拉一次，别处（如生词本学习页）改过这里也能同步；首次聚焦跳过避免重复请求
+  const dayLimitFocusedRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!dayLimitFocusedRef.current) {
+        dayLimitFocusedRef.current = true;
+        return;
+      }
+      loadDayLimit();
+    }, [loadDayLimit])
+  );
+
+  /** 切换生词本学习目标：整包回传卡组，只改 day_limit，其它字段不动 */
+  const handleDayLimitChange = async (goal: number) => {
+    if (savingDayLimit || dayLimit === goal) return;
+    setSavingDayLimit(true);
+    try {
+      const saved = await saveNotebookDayLimit(goal);
+      setDayLimit(saved);
+    } catch (e: any) {
+      setDialog({
+        title: '设置失败',
+        message: e?.message || '生词本学习目标保存失败，请稍后重试',
+        confirmText: '知道了',
+        showCancel: false,
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setSavingDayLimit(false);
+    }
+  };
+
+  /** 当前目标不在快捷档位里时，说明是自定义值（可能是别处设置的） */
+  const isCustomLimit = dayLimit > 0 && !NOTEBOOK_DAY_LIMIT_OPTIONS.includes(dayLimit);
+
+  /** 自定义值回填：不是快捷档位时把服务端的值显示在输入框里 */
+  useEffect(() => {
+    setCustomLimit(isCustomLimit ? String(dayLimit) : '');
+  }, [dayLimit, isCustomLimit]);
+
+  /** 自定义输入提交：空值或非法值不保存，恢复成当前目标 */
+  const handleCustomSubmit = async () => {
+    const raw = customLimit.trim();
+    const n = Number(raw);
+    if (!raw || !Number.isFinite(n) || n <= 0) {
+      setCustomLimit(isCustomLimit ? String(dayLimit) : '');
+      return;
+    }
+    const goal = Math.min(NOTEBOOK_DAY_LIMIT_MAX, Math.floor(n));
+    if (goal === dayLimit) {
+      setCustomLimit(String(goal));
+      return;
+    }
+    await handleDayLimitChange(goal);
   };
 
   const handleAccentChange = (accent: 'en-US' | 'en-GB') => {
@@ -233,6 +326,44 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <Text style={styles.statNum}>{stats.masteredCount}</Text>
               <Text style={styles.statLbl}>已掌握单词</Text>
             </View>
+          </View>
+        </View>
+
+        {/* 生词本学习目标：对应生词本设置里的「每日添加新学习卡片数量」 */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.cardHeaderTitle}>生词本学习目标</Text>
+          <Text style={styles.settingDesc}>每天添加到生词本的新学习卡片数量</Text>
+          <View style={styles.goalRow}>
+            {NOTEBOOK_DAY_LIMIT_OPTIONS.map((goal) => {
+              const isSelected = dayLimit === goal;
+              return (
+                <TouchableOpacity
+                  key={goal}
+                  style={[styles.goalChip, isSelected && styles.goalChipActive]}
+                  onPress={() => handleDayLimitChange(goal)}
+                  activeOpacity={0.7}
+                  disabled={loadingDayLimit || savingDayLimit}
+                >
+                  <Text style={[styles.goalChipText, isSelected && styles.goalChipTextActive]}>
+                    {goal} 词
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+            {/* 自定义：别处可能设成非档位数字，这里原样显示并可直接改 */}
+            <TextInput
+              style={[styles.goalInput, isCustomLimit && styles.goalInputActive]}
+              value={customLimit}
+              onChangeText={(t) => setCustomLimit(t.replace(/[^0-9]/g, ''))}
+              keyboardType="number-pad"
+              placeholder="自定义"
+              placeholderTextColor={Colors.textMuted}
+              maxLength={3}
+              returnKeyType="done"
+              onSubmitEditing={handleCustomSubmit}
+              onBlur={handleCustomSubmit}
+              editable={!loadingDayLimit && !savingDayLimit}
+            />
           </View>
         </View>
 
@@ -508,6 +639,49 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     marginBottom: 16,
+  },
+  // 生词本学习目标档位（与「发音与朗读」的口音切换同一套观感）
+  goalRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  goalChip: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: Colors.divider,
+    alignItems: 'center',
+  },
+  goalChipActive: {
+    backgroundColor: Colors.primary,
+  },
+  goalChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+  },
+  goalChipTextActive: {
+    color: '#FFFFFF',
+  },
+  goalInput: {
+    flex: 1.3,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: Colors.divider,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+  },
+  // 服务端的值不是快捷档位时高亮，提示当前用的是自定义数量
+  goalInputActive: {
+    backgroundColor: Colors.primaryLight,
+    borderColor: Colors.primary,
+    color: Colors.primary,
   },
   settingRow: {
     flexDirection: 'row',

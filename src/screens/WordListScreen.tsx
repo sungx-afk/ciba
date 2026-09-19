@@ -49,6 +49,15 @@ const TODAY_WORD_TYPES = [0, 1, 2, 3];
 /** 卡组 summary（分类词汇辨析）缓存，避免反复请求；key = 账号id#卡组id */
 const summaryCache = new Map<string, string>();
 
+/**
+ * 点过卡片右侧按钮后，这段时间内忽略整行点击。
+ * RN 里「按下命中谁就由谁接管」，但快速连点、按钮瞬时不可点或列表刚好重排时，
+ * 收尾手势可能落到整行卡片上，表现为点了「已记住」却进了背诵页。
+ */
+const CHILD_ACTION_GRACE_MS = 350;
+/** 右侧圆按钮 34pt，补一圈点击区到接近 44pt；左右只补 5，避免与相邻按钮抢触摸 */
+const ACTION_HIT_SLOP = { top: 8, bottom: 8, left: 5, right: 5 };
+
 /** 卡片主标题的展示方式：英文单词 / 中文词义 */
 type ViewMode = 'word' | 'meaning';
 
@@ -243,6 +252,19 @@ const WordRow: React.FC<WordRowProps> = ({
   const cardRef = useRef<any>(null);
   const [busy, setBusy] = useState(false);
   const [bookmarking, setBookmarking] = useState(false);
+  /** 最近一次点击右侧按钮的时间，用于抑制误落到整行的点击 */
+  const lastActionAt = useRef(0);
+
+  /** 右侧按钮都记一下时间：接下来的一小段时间里整行点击不再进背诵页 */
+  const markAction = () => {
+    lastActionAt.current = Date.now();
+  };
+
+  /** 整行点击：刚操作过右侧按钮就忽略这一次，避免误进背诵页 */
+  const handleRowPress = () => {
+    if (Date.now() - lastActionAt.current < CHILD_ACTION_GRACE_MS) return;
+    onPress();
+  };
 
   const phonetic = useMemo(() => extractPhonetic(word.note), [word.note]);
   const noteBody = useMemo(
@@ -256,11 +278,13 @@ const WordRow: React.FC<WordRowProps> = ({
 
   const handlePronounce = (e: any) => {
     e?.stopPropagation?.();
+    markAction();
     pronounceWord(word.word, { accent });
   };
 
   const handleBookmark = async (e: any) => {
     e?.stopPropagation?.();
+    markAction();
     if (bookmarking) return;
     setBookmarking(true);
     try {
@@ -272,6 +296,8 @@ const WordRow: React.FC<WordRowProps> = ({
 
   const handleMastered = (e: any) => {
     e?.stopPropagation?.();
+    // 先记时间：忙时直接返回，也别把这一次点击让给整行卡片
+    markAction();
     if (busy) return;
     setBusy(true);
 
@@ -307,9 +333,11 @@ const WordRow: React.FC<WordRowProps> = ({
   return (
     <Animated.View
       ref={cardRef}
+      // 已点过「已记住」的卡片正在飞出，别再接收点击，避免残影被点到进了背诵页
+      pointerEvents={busy ? 'none' : 'auto'}
       style={[styles.card, { opacity: hide.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
     >
-      <TouchableOpacity style={styles.cardInner} onPress={onPress} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.cardInner} onPress={handleRowPress} activeOpacity={0.7}>
         <View style={styles.cardMainRow}>
           <View style={styles.titleWrap}>
             <View style={styles.titleLine}>
@@ -337,7 +365,7 @@ const WordRow: React.FC<WordRowProps> = ({
               style={[styles.roundBtn, isBookmarked ? styles.bookmarkBtnActive : styles.bookmarkBtn]}
               onPress={(e) => handleBookmark(e)}
               activeOpacity={0.85}
-              disabled={bookmarking}
+              hitSlop={ACTION_HIT_SLOP}
               accessibilityLabel="加入生词本"
             >
               <Ionicons
@@ -358,7 +386,7 @@ const WordRow: React.FC<WordRowProps> = ({
                 style={[styles.roundBtn, styles.checkBtn]}
                 onPress={(e) => handleMastered(e)}
                 activeOpacity={0.85}
-                disabled={busy}
+                hitSlop={ACTION_HIT_SLOP}
                 accessibilityLabel="标记为已记住"
               >
                 <Ionicons name="checkmark" size={20} color={Colors.success} />

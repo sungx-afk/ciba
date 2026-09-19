@@ -183,6 +183,10 @@ export interface NotebookStats {
   learnedToday: number;
   /** 生词本里的全部单词数量（card_count） */
   totalWords: number;
+  /** 已记住的单词数量（服务端 remembered_card_count） */
+  rememberedCount: number;
+  /** 还没记住的单词数量 = 总数量 - 已记住 */
+  notRemembered: number;
 }
 
 /** 从卡组 conf 里解析每日学习目标：conf 是 JSON 字符串，day_limit 在 pack_btns_setting 下 */
@@ -204,19 +208,23 @@ function parseDayLimit(conf: unknown): number {
  * 首页「今日学习-生词本」卡片的三个统计数字:
  *   学习    <- conf.pack_btns_setting.day_limit（每日学习目标）
  *   已学习  <- today_learned_card_count（今日已学的生词数）
- *   总数量  <- card_count（生词本全部单词数）
+ *   未记住  <- card_count - remembered_card_count（展示成「未记住/总数量」）
  */
 export async function fetchNotebookStats(force = false): Promise<NotebookStats> {
   const packId = await fetchDefaultMoviePackId(force);
   const rsp = await api.get<any>(`/anki/pack/${packId}.json`);
   const pack = rsp?.pack || {};
+  const totalWords = Number(pack.card_count) || 0;
+  const rememberedCount = Number(pack.remembered_card_count) || 0;
 
   return {
     packId,
     name: pack.name || '生词本',
     dayLimit: parseDayLimit(pack.conf),
     learnedToday: Number(pack.today_learned_card_count) || 0,
-    totalWords: Number(pack.card_count) || 0,
+    totalWords,
+    rememberedCount: Math.min(rememberedCount, totalWords),
+    notRemembered: Math.max(0, totalWords - rememberedCount),
   };
 }
 
@@ -392,4 +400,38 @@ export async function saveBookmarkPackDetail(pack: Record<string, any>): Promise
   const id = Number(pack?.id) || 0;
   if (!id) throw new APIError(-1, '卡组信息不完整，无法保存设置');
   await api.patch(`/anki/pack/${id}.json`, pack);
+}
+
+/** 生词本「每日添加新学习卡片数量」的快捷档位，除此之外还可以填任意正整数 */
+export const NOTEBOOK_DAY_LIMIT_OPTIONS = [20, 30, 50];
+/** 每日学习目标的上限，避免填出离谱的数字 */
+export const NOTEBOOK_DAY_LIMIT_MAX = 999;
+
+/**
+ * 读生词本每日学习目标：conf.pack_btns_setting.day_limit。
+ * 与首页「今日学习-生词本」的「学习目标」、生词本学习页设置里的
+ * 「每日添加新学习卡片数量」是同一个字段。
+ */
+export async function fetchNotebookDayLimit(): Promise<number> {
+  const pack = await fetchBookmarkPackDetail();
+  return parseDayLimit(parsePackConf(pack.conf));
+}
+
+/**
+ * 保存生词本每日学习目标（每日添加新学习卡片数量）。
+ * 先取最新卡组详情再整包 PATCH，只改 conf.pack_btns_setting.day_limit，
+ * conf 里的复习档位 btns、alert_time 以及 pack 的其它字段都原样带回，避免丢数据。
+ */
+export async function saveNotebookDayLimit(dayLimit: number): Promise<number> {
+  const next = Math.max(1, Math.floor(Number(dayLimit) || 0));
+  const pack = await fetchBookmarkPackDetail();
+  const conf = parsePackConf(pack.conf);
+  const prevSetting =
+    conf.pack_btns_setting && typeof conf.pack_btns_setting === 'object' ? conf.pack_btns_setting : {};
+  const nextConf = {
+    ...conf,
+    pack_btns_setting: { ...prevSetting, day_limit: next },
+  };
+  await saveBookmarkPackDetail({ ...pack, conf: JSON.stringify(nextConf) });
+  return next;
 }

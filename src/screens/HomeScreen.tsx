@@ -923,6 +923,23 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
     };
   }, [rememberedTotal, learningTotal]);
 
+  /**
+   * 父卡组单词进度: 已记住单词数 / 总单词数。
+   * 数据取父卡组自身的 remembered_card_count 与 card_count，与「今日学习」同一口径；
+   * 学完返回时 refreshSelectedTopStats 会刷新这两个字段。
+   */
+  const packWordProgress = useMemo(() => {
+    const total = Number(selectedTop?.card_count) || 0;
+    // 已记住不会超过总词数，避免服务端缓存出现「已记住 > 总数」
+    const remembered = Math.max(0, Math.min(total, Number(selectedTop?.remembered_card_count) || 0));
+    return {
+      total,
+      remembered,
+      notRemembered: Math.max(0, total - remembered),
+      progress: total > 0 ? Math.min(1, remembered / total) : 0,
+    };
+  }, [selectedTop]);
+
   const renderSubPack = ({ item }: { item: RemotePack }) => {
     const isActive = activeSub?.id === item.id;
     const total = item.card_count || 0;
@@ -1027,7 +1044,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
       <View style={[styles.notebookStatIcon, { backgroundColor: `${accent}1F` }]}>
         <Ionicons name={icon} size={14} color={accent} />
       </View>
-      <Text style={styles.notebookStatValue}>{value}</Text>
+      <Text style={styles.notebookStatValue} numberOfLines={1}>
+        {value}
+      </Text>
       <Text style={styles.notebookStatLabel}>{label}</Text>
     </View>
   );
@@ -1119,7 +1138,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
             )}
             {renderNotebookStat(
               '总数量',
-              notebook?.totalWords ?? '-',
+              notebook ? `${notebook.notRemembered}/${notebook.totalWords}` : '-',
               'library-outline',
               Colors.accent
             )}
@@ -1218,16 +1237,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         </View>
       </View>
 
-      {/* 已记住卡组数 / (已记住 + 未记住) 卡组数 */}
+      {/* 已记住单词数 / 总单词数（父卡组 remembered_card_count 与 card_count） */}
       <View style={styles.packsProgressTrack}>
-        <ProgressBar progress={packProgress.progress} height={8} color={Colors.success} />
+        <ProgressBar progress={packWordProgress.progress} height={8} color={Colors.success} />
       </View>
       <View style={styles.packsProgressMeta}>
         <Text style={styles.packsProgressText}>
-          已记住 <Text style={styles.packsProgressStrong}>{packProgress.remembered}</Text> 组
+          已记住 <Text style={styles.packsProgressStrong}>{packWordProgress.remembered}</Text> 词
         </Text>
         <Text style={styles.packsProgressText}>
-          未记住 <Text style={styles.packsProgressStrong}>{packProgress.learning}</Text> 组
+          未记住 <Text style={styles.packsProgressStrong}>{packWordProgress.notRemembered}</Text> 词
         </Text>
       </View>
 

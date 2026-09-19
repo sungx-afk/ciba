@@ -19,6 +19,11 @@ interface ActionSheetProps {
   items: ActionSheetItem[];
   onSelect: (key: string) => void;
   onClose: () => void;
+  /**
+   * 菜单消失动画结束后回调（iOS 的 Modal.onDismiss）。
+   * 用来接「关掉菜单后再开别的内容」，避免同一帧关一个 Modal 又开一个导致新弹层不显示。
+   */
+  onDismiss?: () => void;
   /** 取消项文案，默认「取消」 */
   cancelText?: string;
 }
@@ -28,6 +33,7 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
   items,
   onSelect,
   onClose,
+  onDismiss,
   cancelText = '取消',
 }) => {
   return (
@@ -37,6 +43,7 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
       animationType="slide"
       statusBarTranslucent
       onRequestClose={onClose}
+      onDismiss={onDismiss}
     >
       <View style={styles.overlay}>
         <TouchableOpacity style={styles.mask} activeOpacity={1} onPress={onClose} />

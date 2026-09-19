@@ -77,6 +77,15 @@ interface TabState {
   loadingMore: boolean;
 }
 
+/**
+ * 点过卡片右侧按钮后，这段时间内忽略整行点击。
+ * RN 里「按下命中谁就由谁接管」，但快速连点、按钮瞬时不可点或列表刚好重排时，
+ * 收尾手势可能落到整行卡片上，表现为点了「已记住」却进了背诵页。
+ */
+const CHILD_ACTION_GRACE_MS = 350;
+/** 右侧圆按钮 34pt，补一圈点击区到接近 44pt */
+const ACTION_HIT_SLOP = { top: 8, bottom: 8, left: 5, right: 5 };
+
 const emptyTab = (): TabState => ({ words: [], total: 0, hasMore: false, loadingMore: false });
 const emptyTabs = (): Record<TabKey, TabState> => ({
   learning: emptyTab(),
@@ -140,12 +149,26 @@ const WordRow: React.FC<WordRowProps> = ({
   /** 按钮按下反馈 */
   const press = useRef(new Animated.Value(0)).current;
   const [busy, setBusy] = useState(false);
+  /** 最近一次点击右侧按钮的时间，用于抑制误落到整行的点击 */
+  const lastActionAt = useRef(0);
+
+  /** 右侧按钮都记一下时间：接下来的一小段时间里整行点击不再进背诵页 */
+  const markAction = () => {
+    lastActionAt.current = Date.now();
+  };
+
+  /** 整行点击：刚操作过右侧按钮就忽略这一次，避免误进背诵页 */
+  const handleRowPress = () => {
+    if (Date.now() - lastActionAt.current < CHILD_ACTION_GRACE_MS) return;
+    onPress();
+  };
 
   const phonetic = useMemo(() => extractPhonetic(word.note), [word.note]);
   const noteBody = useMemo(() => noteWithoutPhonetic(word.note, phonetic), [word.note, phonetic]);
 
   const handlePronounce = (e: any) => {
     e?.stopPropagation?.();
+    markAction();
     pronounceWord(word.word, { accent });
   };
 
@@ -166,6 +189,8 @@ const WordRow: React.FC<WordRowProps> = ({
 
   const handleMastered = (e: any) => {
     e?.stopPropagation?.();
+    // 先记时间：忙时直接返回，也别把这一次点击让给整行卡片
+    markAction();
     if (busy || mastered) return;
     setBusy(true);
 
@@ -191,6 +216,8 @@ const WordRow: React.FC<WordRowProps> = ({
 
   return (
     <Animated.View
+      // 已点过「已记住」的卡片正在滑出，别再接收点击，避免残影被点到进了背诵页
+      pointerEvents={busy ? 'none' : 'auto'}
       style={[
         styles.card,
         {
@@ -201,7 +228,7 @@ const WordRow: React.FC<WordRowProps> = ({
         },
       ]}
     >
-      <TouchableOpacity style={styles.cardInner} onPress={onPress} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.cardInner} onPress={handleRowPress} activeOpacity={0.7}>
         <View style={styles.cardMainRow}>
           <View style={styles.titleWrap}>
             <View style={styles.titleLine}>
@@ -226,9 +253,15 @@ const WordRow: React.FC<WordRowProps> = ({
 
           <View style={styles.actionRow}>
             {mastered ? (
-              <View style={[styles.roundBtn, styles.doneBtn]} accessibilityLabel="已记住">
+              // 已记住的实心对勾不可点，但仍要自己吃掉触摸，否则会穿透到整行进了背诵页
+              <TouchableOpacity
+                style={[styles.roundBtn, styles.doneBtn]}
+                onPress={markAction}
+                activeOpacity={1}
+                accessibilityLabel="已记住"
+              >
                 <Ionicons name="checkmark" size={20} color="#FFFFFF" />
-              </View>
+              </TouchableOpacity>
             ) : (
               <Animated.View
                 style={{
@@ -240,7 +273,7 @@ const WordRow: React.FC<WordRowProps> = ({
                 <TouchableOpacity
                   onPress={handleMastered}
                   activeOpacity={0.85}
-                  disabled={busy}
+                  hitSlop={ACTION_HIT_SLOP}
                   accessibilityLabel="标记为已记住"
                 >
                   <Animated.View

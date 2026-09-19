@@ -418,9 +418,43 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     }
   }, []);
 
+  /** 菜单关闭后待执行的动作：iOS 上同一帧关一个 Modal 再开另一个，第二个常常不显示 */
+  const pendingSheetActionRef = useRef<(() => void) | null>(null);
+  const sheetCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** 立即执行菜单关闭后挂起的动作（iOS 由 Modal.onDismiss 触发） */
+  const flushSheetAction = useCallback(() => {
+    if (sheetCloseTimerRef.current) {
+      clearTimeout(sheetCloseTimerRef.current);
+      sheetCloseTimerRef.current = null;
+    }
+    const action = pendingSheetActionRef.current;
+    pendingSheetActionRef.current = null;
+    action?.();
+  }, []);
+
+  /** 先关菜单，等它消失后再执行动作 */
+  const runAfterSheetClose = useCallback(
+    (action: () => void) => {
+      pendingSheetActionRef.current = action;
+      setSheetVisible(false);
+      if (sheetCloseTimerRef.current) clearTimeout(sheetCloseTimerRef.current);
+      // onDismiss 在部分平台/版本不会回调，用定时器兜底，时长覆盖菜单消失动画
+      sheetCloseTimerRef.current = setTimeout(flushSheetAction, 320);
+    },
+    [flushSheetAction]
+  );
+
+  // 离开页面时清掉可能还没跑的定时器
+  useEffect(
+    () => () => {
+      if (sheetCloseTimerRef.current) clearTimeout(sheetCloseTimerRef.current);
+    },
+    []
+  );
+
   /** 打开设置面板：把当前配置灌进草稿，点「确定」才生效 */
   const handleOpenSetting = () => {
-    setSheetVisible(false);
     setDraftDayLimit(String(packBtns.day_limit || DEFAULT_PACK_BTNS_SETTING.day_limit));
     const days: Record<number, string> = {};
     packBtns.btns.forEach((btn) => {
@@ -431,21 +465,22 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     setSettingsVisible(true);
   };
 
-  /** 右上角动作菜单：删除卡片 / 设置 */
+  /** 右上角动作菜单：删除卡片 / 设置（都要等菜单消失后再开新的弹层） */
   const handleSheetSelect = (key: string) => {
-    setSheetVisible(false);
     if (key === 'setting') {
-      handleOpenSetting();
+      runAfterSheetClose(handleOpenSetting);
       return;
     }
     if (key === 'delete') {
-      setDialog({
-        title: '删除卡片',
-        message: '确定要删除该卡片吗?',
-        confirmText: '删除',
-        onConfirm: () => {
-          void handleDeleteCard();
-        },
+      runAfterSheetClose(() => {
+        setDialog({
+          title: '删除卡片',
+          message: '确定要删除该卡片吗?',
+          confirmText: '删除',
+          onConfirm: () => {
+            void handleDeleteCard();
+          },
+        });
       });
     }
   };
@@ -1113,6 +1148,7 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
         ]}
         onSelect={handleSheetSelect}
         onClose={() => setSheetVisible(false)}
+        onDismiss={flushSheetAction}
       />
 
       <ConfirmDialog
