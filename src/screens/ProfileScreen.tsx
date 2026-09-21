@@ -24,6 +24,7 @@ import {
   NOTEBOOK_DAY_LIMIT_OPTIONS,
   NOTEBOOK_DAY_LIMIT_MAX,
 } from '../services/bookmarkApi';
+import { AGREEMENT_URL, POLICY_URL } from '../config/legal';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -441,6 +442,38 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         </View> */}
 
         {/* 关于 */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.cardHeaderTitle}>关于</Text>
+
+          <TouchableOpacity
+            style={styles.actionRow}
+            onPress={() =>
+              navigation.navigate('WebPage', { url: AGREEMENT_URL, title: '用户协议' })
+            }
+            activeOpacity={0.7}
+          >
+            <View style={styles.actionLeft}>
+              <Ionicons name="document-text-outline" size={20} color={Colors.primary} />
+              <Text style={styles.actionLabel}>用户协议</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionRow, styles.borderTop]}
+            onPress={() =>
+              navigation.navigate('WebPage', { url: POLICY_URL, title: '隐私政策' })
+            }
+            activeOpacity={0.7}
+          >
+            <View style={styles.actionLeft}>
+              <Ionicons name="shield-checkmark-outline" size={20} color={Colors.primary} />
+              <Text style={styles.actionLabel}>隐私政策</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.aboutFooter}>
           <Text style={styles.aboutText}>糍粑英语 · CibaEnglish v1.0.0</Text>
           <Text style={styles.aboutSub}> 纯粹的分类单词记忆工具</Text>
