@@ -345,7 +345,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   activeOpacity={0.7}
                   disabled={loadingDayLimit || savingDayLimit}
                 >
-                  <Text style={[styles.goalChipText, isSelected && styles.goalChipTextActive]}>
+                  <Text
+                    style={[styles.goalChipText, isSelected && styles.goalChipTextActive]}
+                    numberOfLines={1}
+                    allowFontScaling={false}
+                  >
                     {goal} 词
                   </Text>
                 </TouchableOpacity>
@@ -676,12 +680,15 @@ const styles = StyleSheet.create({
   // 生词本学习目标档位（与「发音与朗读」的口音切换同一套观感）
   goalRow: {
     flexDirection: 'row',
-    gap: 10,
+    flexWrap: 'nowrap',
+    gap: 8,
     marginTop: 10,
   },
   goalChip: {
     flex: 1,
-    paddingVertical: 10,
+    minWidth: 0,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
     borderRadius: 10,
     backgroundColor: Colors.divider,
     alignItems: 'center',
@@ -690,23 +697,25 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
   },
   goalChipText: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '700',
     color: Colors.textSecondary,
   },
   goalChipTextActive: {
     color: '#FFFFFF',
   },
+  // 固定宽度，避免 TextInput 按固有宽度参与 flex 分配把档位挤扁
   goalInput: {
-    flex: 1.3,
+    width: 96,
+    flexShrink: 0,
     paddingHorizontal: 8,
-    paddingVertical: 10,
+    paddingVertical: 14,
     borderRadius: 10,
     backgroundColor: Colors.divider,
     borderWidth: 1,
     borderColor: Colors.border,
     textAlign: 'center',
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '700',
     color: Colors.textPrimary,
   },
