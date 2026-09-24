@@ -27,6 +27,9 @@ import {
   NOTEBOOK_DAY_LIMIT_MAX,
 } from '../services/bookmarkApi';
 import { AGREEMENT_URL, POLICY_URL } from '../config/legal';
+/** 与 package.json / app.json 同步，避免审核员看到不一致的版本号 */
+import pkg from '../../package.json';
+const APP_VERSION = pkg.version;
 
 interface ProfileScreenProps {
   navigation: any;
@@ -293,24 +296,44 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
     });
   };
 
-  /** 真正提交注销：服务端删除 + 本地清空 + 退出登录态 */
+  /** 真正提交注销：服务端删除必须成功，成功后才清本地 + 退出登录态 */
   const performDeleteAccount = async () => {
     if (deletingAccount) return;
     setDeletingAccount(true);
     const userId = (user as any)?.id ?? '';
     try {
-      // 1) 服务端（容错：失败也继续清本地，避免审核流程卡住）
+      // 1) 服务端：必须成功（result 0/1）。失败直接终止，不清本地，避免
+      //    「服务端还保留账号但本地已清」的脏状态（苹果 5.1.1(v) 严格条款）
+      let serverOk = false;
       try {
         const res = await AuthApi.deleteAccount();
-        // 服务端返回非成功码也允许本地清理继续
-        if (res && typeof res.result === 'number' && res.result !== 0 && res.result !== 1) {
+        if (res && typeof res.result === 'number' && (res.result === 0 || res.result === 1)) {
+          serverOk = true;
+        } else {
           console.warn('[注销] 服务端返回非成功：', res);
         }
       } catch (e) {
-        console.warn('[注销] 服务端调用失败，继续清理本地', e);
+        console.warn('[注销] 服务端调用失败', e);
       }
 
-      // 2) 本地数据全清
+      if (!serverOk) {
+        setDialog({
+          title: '注销失败',
+          message:
+            '未能与服务器完成注销，为避免账号数据残留，请稍后再试或前往设置 → 帮助与反馈联系我们处理。',
+          confirmText: '我知道了',
+          cancelText: '再试一次',
+          onConfirm: () => setDialog(null),
+          onCancel: () => {
+            setDialog(null);
+            // 让用户立即重试一次
+            setTimeout(() => performDeleteAccount(), 50);
+          },
+        });
+        return;
+      }
+
+      // 2) 服务端已删，再清本地
       await clearLocalAccountData(userId);
 
       // 3) 退出登录态（清 token / userInfo / 进度内存）
@@ -610,7 +633,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         </View>
 
         <View style={styles.aboutFooter}>
-          <Text style={styles.aboutText}>糍粑英语 · CibaEnglish v1.0.0</Text>
+          <Text style={styles.aboutText}>糍粑英语 · CibaEnglish v{APP_VERSION}</Text>
           <Text style={styles.aboutSub}> 纯粹的分类单词记忆工具</Text>
         </View>
       </ScrollView>
