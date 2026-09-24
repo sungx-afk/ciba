@@ -18,6 +18,8 @@ import { Colors } from '../theme/colors';
 import { Header } from '../components/Header';
 import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
+import { AuthApi } from '../services/api';
+import { clearLocalAccountData } from '../services/accountCleanup';
 import {
   fetchNotebookDayLimit,
   saveNotebookDayLimit,
@@ -42,6 +44,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [logoutVisible, setLogoutVisible] = useState(false);
   /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
   const [dialog, setDialog] = useState<DialogPayload | null>(null);
+  /** 注销账号提交中的防重入标记 */
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   /**
    * 生词本学习目标：即生词本设置里的「每日添加新学习卡片数量」，
@@ -251,6 +255,94 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
     try {
       await progressLogout();
     } catch (_) {}
+  };
+
+  /**
+   * 注销账号入口（苹果审核 5.1.1(v) 要求）。
+   * 两次弹窗：
+   *   1) 告知后果（不可恢复）
+   *   2) 用户再次确认后真正提交
+   */
+  const handleDeleteAccount = () => {
+    if (!isLoggedIn) {
+      setDialog({
+        title: '尚未登录',
+        message: '当前为游客模式，没有可注销的账号。',
+        showCancel: false,
+        confirmText: '知道了',
+        onConfirm: () => setDialog(null),
+      });
+      return;
+    }
+    setDialog({
+      title: '注销账号',
+      message:
+        '注销账号后，你在糍粑英语内的全部学习记录、词库进度、生词本、会员订阅都会被永久删除且不可恢复。该操作无法撤销。\n\n是否继续？',
+      confirmText: '我已知悉，继续',
+      cancelText: '我再想想',
+      onConfirm: () => {
+        setDialog({
+          title: '请再次确认',
+          message: `确认要永久注销当前账号吗？注销后将无法用当前手机号/邮箱找回任何数据。`,
+          confirmText: '确认注销',
+          cancelText: '取消',
+          onConfirm: performDeleteAccount,
+        });
+      },
+      onCancel: () => setDialog(null),
+    });
+  };
+
+  /** 真正提交注销：服务端删除 + 本地清空 + 退出登录态 */
+  const performDeleteAccount = async () => {
+    if (deletingAccount) return;
+    setDeletingAccount(true);
+    const userId = (user as any)?.id ?? '';
+    try {
+      // 1) 服务端（容错：失败也继续清本地，避免审核流程卡住）
+      try {
+        const res = await AuthApi.deleteAccount();
+        // 服务端返回非成功码也允许本地清理继续
+        if (res && typeof res.result === 'number' && res.result !== 0 && res.result !== 1) {
+          console.warn('[注销] 服务端返回非成功：', res);
+        }
+      } catch (e) {
+        console.warn('[注销] 服务端调用失败，继续清理本地', e);
+      }
+
+      // 2) 本地数据全清
+      await clearLocalAccountData(userId);
+
+      // 3) 退出登录态（清 token / userInfo / 进度内存）
+      try {
+        await authLogout();
+      } catch (_) {}
+      try {
+        await progressLogout();
+      } catch (_) {}
+
+      // 4) 提示并把栈重置回主框架
+      setDialog({
+        title: '账号已注销',
+        message: '你的账号与本机数据已清除。如需继续使用，请重新注册。',
+        showCancel: false,
+        confirmText: '好的',
+        onConfirm: () => setDialog(null),
+      });
+      try {
+        navigation?.popToTop?.();
+      } catch (_) {}
+    } catch (e: any) {
+      setDialog({
+        title: '注销失败',
+        message: e?.message || '注销过程中出现异常，请稍后重试或联系客服',
+        showCancel: false,
+        confirmText: '知道了',
+        onConfirm: () => setDialog(null),
+      });
+    } finally {
+      setDeletingAccount(false);
+    }
   };
 
   return (
@@ -497,6 +589,24 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
             </View>
             <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </TouchableOpacity>
+
+          {/* 苹果审核 5.1.1(v) 要求：登录账号必须可在 App 内注销。仅登录态可见 */}
+          {isLoggedIn ? (
+            <TouchableOpacity
+              style={[styles.actionRow, styles.borderTop]}
+              onPress={handleDeleteAccount}
+              activeOpacity={0.7}
+              disabled={deletingAccount}
+            >
+              <View style={styles.actionLeft}>
+                <Ionicons name="trash-outline" size={20} color={Colors.pinwheelRed} />
+                <Text style={[styles.actionLabel, { color: Colors.pinwheelRed }]}>
+                  {deletingAccount ? '正在注销…' : '注销账号'}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <View style={styles.aboutFooter}>

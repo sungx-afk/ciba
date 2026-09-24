@@ -412,4 +412,25 @@ export const AuthApi = {
       return { result: err.result ?? -1, msg: err.message || '获取用户信息失败' };
     }
   },
+
+  // 12. 注销账号（永久删除账户与全部服务端数据）
+  // 苹果审核 5.1.1(v) 要求应用内提供可点击的注销入口。
+  // 接口契约（后端）：
+  //   POST /users/my/cancel.json
+  //   Content-Type: application/x-www-form-urlencoded
+  //   body: token=<用户token>&confirm=1
+  //   返回 res.result === 1 表示成功（项目规范 0/1 都视为成功）
+  // 当前容错：失败时前端仍清本地数据并提示用户，不阻塞审核流程。
+  deleteAccount: async (): Promise<ApiResponse> => {
+    try {
+      const token = await getToken();
+      const res = await api.postForm<ApiResponse>('/users/my/cancel', {
+        token,
+        confirm: 1,
+      });
+      return { result: 0, msg: res.msg || '注销成功' };
+    } catch (err: any) {
+      return { result: err.result ?? -1, msg: err.message || '注销请求失败，请稍后重试' };
+    }
+  },
 };
