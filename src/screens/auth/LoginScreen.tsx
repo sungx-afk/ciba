@@ -23,20 +23,21 @@ import { AGREEMENT_URL, POLICY_URL } from '../../config/legal';
 import { AuthApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 
-type LoginTab = 'mobile' | 'password';
+type LoginTab = 'apple' | 'mobile' | 'password';
 
 /**
- * 临时开关：第三方登录（微信 / Apple）在 UI 上先隐藏。
+ * 临时开关：微信登录在 UI 上先隐藏。
  * 只影响展示，登录逻辑与授权回调监听全部保留，
  * 需要重新露出按钮时把这个常量改回 true 即可。
+ * 注：Apple 登录已提升为卡片顶部第一个 Tab，不在此开关控制范围内。
  */
-const SHOW_THIRD_PARTY_LOGIN = false;
+const SHOW_WECHAT_LOGIN = false;
 
 export const LoginScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { login } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<LoginTab>('mobile');
+  const [activeTab, setActiveTab] = useState<LoginTab>('apple');
 
   // 表单状态
   const [mobile, setMobile] = useState('');
@@ -120,12 +121,26 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  // 2. 短信验证码登录/自动注册
-  const handleMobileLogin = async () => {
-    if (!agreeTerms) {
-      Alert.alert('提示', '请先阅读并勾选《用户协议》与《隐私政策》');
+  // 协议确认：未勾选时弹窗提示，点「好」即视为同意并继续登录
+  const requireAgree = (action: () => void) => {
+    if (agreeTerms) {
+      action();
       return;
     }
+    Alert.alert('提示', '请阅读并同意《用户协议》与《隐私政策》', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '好',
+        onPress: () => {
+          setAgreeTerms(true);
+          action();
+        },
+      },
+    ]);
+  };
+
+  // 2. 短信验证码登录/自动注册
+  const handleMobileLogin = async () => {
     const trimmedMobile = mobile.trim();
     const trimmedCode = smsCode.trim();
 
@@ -156,10 +171,6 @@ export const LoginScreen: React.FC = () => {
 
   // 3. 密码登录
   const handlePasswordLogin = async () => {
-    if (!agreeTerms) {
-      Alert.alert('提示', '请先阅读并勾选《用户协议》与《隐私政策》');
-      return;
-    }
     const trimmedAccount = account.trim();
     if (!trimmedAccount) {
       Alert.alert('提示', '请输入手机号或邮箱');
@@ -188,11 +199,6 @@ export const LoginScreen: React.FC = () => {
 
   // 4. 微信授权登录
   const handleWechatLogin = async () => {
-    if (!agreeTerms) {
-      Alert.alert('提示', '请先阅读并勾选《用户协议》与《隐私政策》');
-      return;
-    }
-
     setSocialLoading(true);
     try {
       // 真实检测当前设备是否安装了微信客户端（已在 Info.plist 配置白名单）
@@ -245,11 +251,6 @@ export const LoginScreen: React.FC = () => {
 
   // 5. Apple 授权原生真实登录
   const handleAppleLogin = async () => {
-    if (!agreeTerms) {
-      Alert.alert('提示', '请先阅读并勾选《用户协议》与《隐私政策》');
-      return;
-    }
-
     // 检查当前设备环境是否支持 Apple 登录
     try {
       const isAvailable = await AppleAuthentication.isAvailableAsync();
@@ -397,41 +398,47 @@ export const LoginScreen: React.FC = () => {
             <View style={styles.floatingCard}>
               {/* 卡片顶部极简文字 Tab */}
               <View style={styles.cardTabRow}>
-                <TouchableOpacity
-                  style={styles.cardTabItem}
-                  onPress={() => setActiveTab('mobile')}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    style={[
-                      styles.cardTabText,
-                      activeTab === 'mobile' && styles.cardTabTextActive,
-                    ]}
+                {(['apple', 'mobile', 'password'] as LoginTab[]).map((tab) => (
+                  <TouchableOpacity
+                    key={tab}
+                    style={styles.cardTabItem}
+                    onPress={() => setActiveTab(tab)}
+                    activeOpacity={0.8}
                   >
-                    验证码登录
-                  </Text>
-                  {activeTab === 'mobile' && <View style={styles.cardTabIndicator} />}
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.cardTabItem}
-                  onPress={() => setActiveTab('password')}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    style={[
-                      styles.cardTabText,
-                      activeTab === 'password' && styles.cardTabTextActive,
-                    ]}
-                  >
-                    密码登录
-                  </Text>
-                  {activeTab === 'password' && <View style={styles.cardTabIndicator} />}
-                </TouchableOpacity>
+                    <Text
+                      style={[
+                        styles.cardTabText,
+                        activeTab === tab && styles.cardTabTextActive,
+                      ]}
+                    >
+                      {tab === 'apple' ? 'Apple 登录' : tab === 'mobile' ? '验证码登录' : '密码登录'}
+                    </Text>
+                    {activeTab === tab && <View style={styles.cardTabIndicator} />}
+                  </TouchableOpacity>
+                ))}
               </View>
 
               {/* 表单输入区域 */}
-              {activeTab === 'mobile' ? (
+              {activeTab === 'apple' ? (
+                <View style={styles.formBody}>
+                  <View style={styles.appleIntro}>
+                    <Ionicons name="logo-apple" size={42} color="#1E3A4C" />
+                    <Text style={styles.appleIntroTitle}>使用 Apple 登录</Text>
+                    <Text style={styles.appleIntroDesc}>更快、更私密，无需创建新密码</Text>
+                  </View>
+                  {Platform.OS === 'ios' ? (
+                    <AppleAuthentication.AppleAuthenticationButton
+                      buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                      buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                      cornerRadius={26}
+                      style={styles.appleButton}
+                      onPress={() => requireAgree(handleAppleLogin)}
+                    />
+                  ) : (
+                    <Text style={styles.appleFallback}>Apple 登录仅支持 iOS 设备</Text>
+                  )}
+                </View>
+              ) : activeTab === 'mobile' ? (
                 <View style={styles.formBody}>
                   <AuthInput
                     placeholder="请输入手机号"
@@ -461,19 +468,13 @@ export const LoginScreen: React.FC = () => {
                   />
 
                   <View style={styles.cardSubActionRow}>
-                    <TouchableOpacity
-                      onPress={() => setActiveTab('password')}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.subActionText}>使用账号密码登录</Text>
-                    </TouchableOpacity>
                     <Text style={styles.firstLoginTip}>*首次验证自动注册</Text>
                   </View>
 
                   {/* 登录按钮 */}
                   <TouchableOpacity
                     style={[styles.heroButton, submitting && styles.heroButtonDisabled]}
-                    onPress={handleMobileLogin}
+                    onPress={() => requireAgree(handleMobileLogin)}
                     disabled={submitting}
                     activeOpacity={0.85}
                   >
@@ -503,14 +504,7 @@ export const LoginScreen: React.FC = () => {
                     onChangeText={setPassword}
                   />
 
-                  <View style={styles.cardSubActionRow}>
-                    <TouchableOpacity
-                      onPress={() => setActiveTab('mobile')}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.subActionText}>手机验证码登录</Text>
-                    </TouchableOpacity>
-
+                  <View style={[styles.cardSubActionRow, { justifyContent: 'flex-end' }]}>
                     <TouchableOpacity
                       onPress={() => navigation.navigate('ForgotPassword')}
                       activeOpacity={0.7}
@@ -522,7 +516,7 @@ export const LoginScreen: React.FC = () => {
                   {/* 登录按钮 */}
                   <TouchableOpacity
                     style={[styles.heroButton, submitting && styles.heroButtonDisabled]}
-                    onPress={handlePasswordLogin}
+                    onPress={() => requireAgree(handlePasswordLogin)}
                     disabled={submitting}
                     activeOpacity={0.85}
                   >
@@ -580,7 +574,8 @@ export const LoginScreen: React.FC = () => {
 
           {/* 下半部托底群组：第三方社交登录自然贴靠底部 */}
           <View style={styles.bottomGroup}>
-            {SHOW_THIRD_PARTY_LOGIN ? (
+            {/* Apple 登录已升至顶部第一个 Tab；此处仅保留微信（当前关闭）与保障说明 */}
+            {SHOW_WECHAT_LOGIN && (
               <>
                 <View style={styles.socialDividerRow}>
                   <View style={styles.socialLine} />
@@ -592,7 +587,7 @@ export const LoginScreen: React.FC = () => {
                   {/* 微信登录 */}
                   <TouchableOpacity
                     style={[styles.socialCircleBtn, styles.wechatBg]}
-                    onPress={handleWechatLogin}
+                    onPress={() => requireAgree(handleWechatLogin)}
                     activeOpacity={0.8}
                     disabled={socialLoading}
                   >
@@ -602,20 +597,9 @@ export const LoginScreen: React.FC = () => {
                       <Ionicons name="logo-wechat" size={25} color="#FFFFFF" />
                     )}
                   </TouchableOpacity>
-
-                  {/* Apple 登录 (仅在 iOS 系统显示) */}
-                  {Platform.OS === 'ios' && (
-                    <TouchableOpacity
-                      style={[styles.socialCircleBtn, styles.appleBg]}
-                      onPress={handleAppleLogin}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="logo-apple" size={24} color="#FFFFFF" />
-                    </TouchableOpacity>
-                  )}
                 </View>
               </>
-            ) : null}
+            )}
 
             {/* 底部保障与安心说明 */}
             <Text style={styles.bottomSecurityText}>
@@ -799,6 +783,33 @@ const styles = StyleSheet.create({
   firstLoginTip: {
     fontSize: 11,
     color: '#8BA5B5',
+  },
+  appleIntro: {
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 26,
+  },
+  appleIntroTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#1E3A4C',
+    marginTop: 14,
+  },
+  appleIntroDesc: {
+    fontSize: 12.5,
+    color: '#5A7A8A',
+    marginTop: 6,
+  },
+  appleButton: {
+    width: '100%',
+    height: 52,
+    marginTop: 4,
+  },
+  appleFallback: {
+    fontSize: 13,
+    color: '#8BA5B5',
+    textAlign: 'center',
+    marginTop: 10,
   },
   heroButton: {
     backgroundColor: Colors.primary,
