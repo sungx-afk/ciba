@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "糍粑英语",
+    "name": "糍粑分类背单词",
     "slug": "ciba-english",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "scheme": "cibaenglish",
     "orientation": "portrait",
     "icon": "./src/assets/icon.png",
@@ -39,10 +39,13 @@
         "NSPrivacyAccessedAPITypes": [
           {
             "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
-            "NSPrivacyAccessedAPITypeReasons": ["CA92.1"]
+            "NSPrivacyAccessedAPITypeReasons": [
+              "CA92.1"
+            ]
           }
         ]
-      }
+      },
+      "buildNumber": "2"
     },
     "android": {
       "package": "com.cibaenglish.app",
