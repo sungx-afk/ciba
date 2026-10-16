@@ -16,7 +16,7 @@ public final class CibaWechatModule: Module {
 
       WechatRespHandler.shared.beginAuth(state: state, promise: promise)
 
-      WXApi.sendReq(req) { success in
+      WXApi.send(req) { success in
         if !success {
           WechatRespHandler.shared.cancelAuth()
           promise.reject("ERR_WECHAT_SEND", "调起微信失败")
