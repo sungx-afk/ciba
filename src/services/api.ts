@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { WECHAT_APP_ID } from '../config/wechat';
 
 /**
  * 糍粑英语后端 API 客户端
@@ -322,7 +323,7 @@ export const AuthApi = {
     try {
       const body: Record<string, any> = {
         plat: PLAT,
-        appid: wechatParams.appid || 'wx97f824fd700ab212',
+        appid: wechatParams.appid || WECHAT_APP_ID,
       };
       if (wechatParams.code) {
         body.code = wechatParams.code;

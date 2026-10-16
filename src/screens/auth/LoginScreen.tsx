@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -22,16 +22,17 @@ import { CountdownButton } from '../../components/CountdownButton';
 import { AGREEMENT_URL, POLICY_URL } from '../../config/legal';
 import { AuthApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { loginWithWechat, isWechatLoginSupported } from '../../services/wechat';
 
 type LoginTab = 'apple' | 'mobile' | 'password';
 
 /**
- * 临时开关：微信登录在 UI 上先隐藏。
- * 只影响展示，登录逻辑与授权回调监听全部保留，
- * 需要重新露出按钮时把这个常量改回 true 即可。
+ * 微信登录入口开关。
+ * 授权流程走微信官方 OpenSDK（见 modules/ciba-wechat），
+ * Android 端未在开放平台登记应用，故仅 iOS 展示。
  * 注：Apple 登录已提升为卡片顶部第一个 Tab，不在此开关控制范围内。
  */
-const SHOW_WECHAT_LOGIN = false;
+const SHOW_WECHAT_LOGIN = true;
 
 export const LoginScreen: React.FC = () => {
   const navigation = useNavigation<any>();
@@ -49,48 +50,6 @@ export const LoginScreen: React.FC = () => {
   const [agreeTerms, setAgreeTerms] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [socialLoading, setSocialLoading] = useState(false);
-
-  // 监听微信授权成功后跳回 App 的深度链接 (Deep Link) 回调
-  useEffect(() => {
-    const handleUrl = async ({ url }: { url: string }) => {
-      if (!url) return;
-      // 提取回调 URL 中的授权 code，如 wx97f824fd700ab212://oauth?code=xxxx&state=ciba_auth
-      const match = url.match(/[?&]code=([^&#]+)/);
-      if (match && match[1]) {
-        const authCode = decodeURIComponent(match[1]);
-        setSocialLoading(true);
-        try {
-          const res = await AuthApi.wechatAppLogin({
-            code: authCode,
-            appid: 'wx97f824fd700ab212',
-          });
-          if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
-            await login(res.user, res.token);
-            navigation.goBack();
-          } else {
-            Alert.alert('微信登录失败', res?.msg || '微信授权校验失败，请使用手机验证码登录');
-          }
-        } catch (err: any) {
-          Alert.alert('微信登录异常', err.message || '网络连接异常');
-        } finally {
-          setSocialLoading(false);
-        }
-      }
-    };
-
-    // 检查应用冷启动时的初始 URL
-    Linking.getInitialURL().then((initialUrl) => {
-      if (initialUrl) {
-        handleUrl({ url: initialUrl });
-      }
-    });
-
-    // 监听前台/后台跳转事件
-    const subscription = Linking.addEventListener('url', handleUrl);
-    return () => {
-      subscription.remove();
-    };
-  }, [login, navigation]);
 
   // 格式化手机号输入 (3-4-4 分段显示)
   const handleMobileChange = (text: string) => {
@@ -197,11 +156,11 @@ export const LoginScreen: React.FC = () => {
     }
   };
 
-  // 4. 微信授权登录
+  // 4. 微信授权登录（经微信官方 OpenSDK 拉起，回调由原生模块接收）
   const handleWechatLogin = async () => {
     setSocialLoading(true);
     try {
-      // 真实检测当前设备是否安装了微信客户端（已在 Info.plist 配置白名单）
+      // 先检测设备是否安装微信客户端（Info.plist 已配置白名单）
       let canOpen = false;
       try {
         canOpen = await Linking.canOpenURL('weixin://');
@@ -210,40 +169,28 @@ export const LoginScreen: React.FC = () => {
       }
 
       if (!canOpen) {
-        // 尝试直接 openURL 避免部分机型策略限制
-        try {
-          await Linking.openURL('weixin://');
-          return;
-        } catch {
-          Alert.alert(
-            '未检测到微信',
-            '您的设备尚未安装微信客户端，或当前系统未授权跳转。推荐使用手机验证码一键登录，无需密码，安全便捷。',
-            [
-              { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
-              { text: '知道了', style: 'cancel' },
-            ]
-          );
-          return;
-        }
+        Alert.alert(
+          '未检测到微信',
+          '您的设备尚未安装微信客户端，或当前系统未授权跳转。推荐使用手机验证码一键登录，无需密码，安全便捷。',
+          [
+            { text: '使用验证码登录', onPress: () => setActiveTab('mobile') },
+            { text: '知道了', style: 'cancel' },
+          ]
+        );
+        return;
       }
 
-      // 微信移动应用官方授权唤起协议（包含 AppID、授权作用域与防重放 state）
-      const wechatAuthUrl = 'weixin://app/wx97f824fd700ab212/auth/?scope=snsapi_userinfo&state=ciba_auth';
-      try {
-        await Linking.openURL(wechatAuthUrl);
-      } catch (authErr) {
-        console.warn('wechat auth url open failed, fallback to app:', authErr);
-        await Linking.openURL('weixin://');
+      const res = await loginWithWechat();
+      if (res && (res.result === 0 || res.result === 1) && res.user && res.token) {
+        await login(res.user, res.token);
+        navigation.goBack();
+      } else {
+        Alert.alert('微信登录失败', res?.msg || '微信授权校验失败，请使用手机验证码登录');
       }
     } catch (err: any) {
-      Alert.alert(
-        '唤起微信提示',
-        '未能打开微信客户端，推荐直接使用手机号验证码一键登录。',
-        [
-          { text: '使用手机号登录', onPress: () => setActiveTab('mobile') },
-          { text: '知道了', style: 'cancel' },
-        ]
-      );
+      // 用户主动取消授权时静默返回，不打扰
+      if (err?.code === 'ERR_WECHAT_CANCEL') return;
+      Alert.alert('微信登录异常', err?.message || '微信授权失败，请使用手机验证码登录');
     } finally {
       setSocialLoading(false);
     }
@@ -575,7 +522,7 @@ export const LoginScreen: React.FC = () => {
           {/* 下半部托底群组：第三方社交登录自然贴靠底部 */}
           <View style={styles.bottomGroup}>
             {/* Apple 登录已升至顶部第一个 Tab；此处仅保留微信（当前关闭）与保障说明 */}
-            {SHOW_WECHAT_LOGIN && (
+            {SHOW_WECHAT_LOGIN && isWechatLoginSupported && (
               <>
                 <View style={styles.socialDividerRow}>
                   <View style={styles.socialLine} />

@@ -1,0 +1,8 @@
+{
+  "name": "ciba-wechat",
+  "version": "1.0.0",
+  "description": "微信登录（iOS / 微信 OpenSDK）本地 Expo 模块",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true
+}

@@ -16,20 +16,22 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.yugusoft.CibaEnglish.category",
+      "associatedDomains": ["applinks:cibaen.com"],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "CFBundleURLTypes": [
           {
             "CFBundleURLName": "weixin",
             "CFBundleURLSchemes": [
-              "wx97f824fd700ab212",
+              "wxb71c639d4f3530dd",
               "cibaenglish"
             ]
           }
         ],
         "LSApplicationQueriesSchemes": [
           "weixin",
-          "weixinULAPI"
+          "weixinULAPI",
+          "weixinURLParamsAPI"
         ]
       },
       "privacyManifests": {
