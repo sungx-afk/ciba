@@ -15,8 +15,11 @@ Pod::Spec.new do |s|
   # 老 SDK 内部使用系统已废弃的 openURL 接口，iOS 18+ / Xcode 16 打包会偶发拉不起微信。
   s.dependency 'WechatOpenSDK-XCFramework', '>= 2.0.4'
 
-  s.source_files = 'ios/**/*.{h,m,mm,swift}'
-  s.preserve_paths = 'ios/**/*.{h,m,mm,swift}'
+  # podspec 位于 ios/ 目录内，与 Swift 源文件同级，
+  # 路径必须相对 podspec 自身位置；写成 'ios/**' 会指向 ios/ios/** 从而匹配不到任何文件，
+  # 导致 pod 虽安装成功却没有 Swift module，编译时报 Unable to find module dependency: 'CibaWechat'
+  s.source_files = '**/*.{h,m,mm,swift}'
+  s.preserve_paths = '**/*.{h,m,mm,swift}'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
   }
