@@ -13,7 +13,13 @@ Pod::Spec.new do |s|
 
   # 官方 XCFramework 版 SDK。必须为 2.0.4 及以上：
   # 老 SDK 内部使用系统已废弃的 openURL 接口，iOS 18+ / Xcode 16 打包会偶发拉不起微信。
-  s.dependency 'WechatOpenSDK-XCFramework', '>= 2.0.4'
+  #
+  # 这里锁定到 2.0.9 而非用 '>= 2.0.4'：
+  # 1) SDK 各版本的 Swift API 有差异（如 sendReq 更名为 send），浮动解析会让原生代码的
+  #    编译结果不可预期，必须固定；
+  # 2) 该 pod 不是从 CocoaPods CDN 下载的，而是 curl 腾讯服务器 dldir1.qq.com 上的 zip，
+  #    每次远端发布新版本都可能换 URL，锁版本可避免解析到下载源异常的版本。
+  s.dependency 'WechatOpenSDK-XCFramework', '2.0.9'
 
   # podspec 位于 ios/ 目录内，与 Swift 源文件同级，
   # 路径必须相对 podspec 自身位置；写成 'ios/**' 会指向 ios/ios/** 从而匹配不到任何文件，
