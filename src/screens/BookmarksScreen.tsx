@@ -29,8 +29,10 @@ import { playRememberedSound } from '../utils/effectSound';
 import {
   fetchBookmarkedWords,
   fetchDefaultMoviePackId,
+  fetchNotebookStudyWords,
   getCachedBookmarkPackId,
   BOOKMARK_PAGE_SIZE,
+  NOTEBOOK_STUDY_LIMIT,
   BOOKMARK_LEARNING_TYPES,
   BOOKMARK_MASTERED_TYPES,
 } from '../services/bookmarkApi';
@@ -47,7 +49,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 }
 
 /** 列表分组 */
-type TabKey = 'learning' | 'mastered' | 'all';
+type TabKey = 'review' | 'learning' | 'mastered' | 'all';
 
 interface TabMeta {
   key: TabKey;
@@ -56,14 +58,23 @@ interface TabMeta {
   types?: number[];
 }
 
-/** 顶部三个 tab：学习中 / 已记住 / 全部，各自对应一组服务端 type 过滤 */
+/**
+ * 「今日复习」与其它分组的数据源不同：
+ * 它走 learn.json（服务端按到期时间返回今日待复习卡片），
+ * 其它分组走 learn-by-menu.json 按 type 过滤。
+ */
+const isReviewKey = (key: TabKey) => key === 'review';
+
+/** 顶部四个 tab：今日复习 / 学习中 / 已记住 / 全部 */
 const BOOKMARK_TABS: TabMeta[] = [
+  { key: 'review', label: '今日复习' },
   { key: 'learning', label: '学习中', types: BOOKMARK_LEARNING_TYPES },
   { key: 'mastered', label: '已记住', types: BOOKMARK_MASTERED_TYPES },
   { key: 'all', label: '全部', types: undefined },
 ];
 
 const TAB_TYPES: Record<TabKey, number[] | undefined> = {
+  review: undefined,
   learning: BOOKMARK_LEARNING_TYPES,
   mastered: BOOKMARK_MASTERED_TYPES,
   all: undefined,
@@ -75,6 +86,13 @@ interface TabState {
   total: number;
   hasMore: boolean;
   loadingMore: boolean;
+  /**
+   * 下一页要传的 start。
+   * 两个列表接口都是「先 SQL 分页、再过滤掉词库里查不到的单词」，
+   * 所以这里记的是服务端消费掉的 offset（nextStart），不是本地 words.length，
+   * 否则翻页会错位（漏词或重复）。
+   */
+  nextStart: number;
 }
 
 /**
@@ -86,8 +104,29 @@ const CHILD_ACTION_GRACE_MS = 350;
 /** 右侧圆按钮 34pt，补一圈点击区到接近 44pt */
 const ACTION_HIT_SLOP = { top: 8, bottom: 8, left: 5, right: 5 };
 
-const emptyTab = (): TabState => ({ words: [], total: 0, hasMore: false, loadingMore: false });
+const emptyTab = (): TabState => ({
+  words: [],
+  total: 0,
+  hasMore: false,
+  loadingMore: false,
+  nextStart: 0,
+});
+
+/**
+ * 「今日复习」的静默刷新间隔。
+ * 服务端每次调 learn-by-menu.json 都会重建复习队列（先 DELETE 全部 review、再 INSERT 本次卡片），
+ * 而 learn.json 读的就是这个队列。进一次页面就重灌一次队列，今天该复习哪些词会一直变。
+ * 所以回焦/切 tab 的静默刷新在有效期内直接复用本地数据，只有用户手动下拉才真正重拉。
+ */
+const REVIEW_REFRESH_TTL_MS = 5 * 60 * 1000;
+/**
+ * 回焦静默刷新的最小间隔。learn-by-menu.json 每次都会重建复习队列，
+ * 来回切页面就重打一轮，等于不停改写服务端的复习队列，这里做个最短间隔兜底。
+ */
+const SILENT_REFRESH_TTL_MS = 30 * 1000;
+
 const emptyTabs = (): Record<TabKey, TabState> => ({
+  review: emptyTab(),
   learning: emptyTab(),
   mastered: emptyTab(),
   all: emptyTab(),
@@ -383,17 +422,38 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
   // 防止并发请求 & 丢弃过期请求的结果
   const loadingRef = useRef(false);
   const genRef = useRef(0);
-  const reqIdRef = useRef<Record<TabKey, number>>({ learning: 0, mastered: 0, all: 0 });
+  const reqIdRef = useRef<Record<TabKey, number>>({
+    review: 0,
+    learning: 0,
+    mastered: 0,
+    all: 0,
+  });
   /** loadMore 要读到最新的分页状态，又不能因为它重建回调 */
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  /** 「今日复习」上次成功拉取的时间戳，用于静默刷新的节流 */
+  const reviewLoadedAtRef = useRef(0);
+  /** 上一轮 loadTabs 完成的时间戳，用于回焦静默刷新的最短间隔 */
+  const lastLoadedAtRef = useRef(0);
 
   const activeState = tabs[activeTab];
   const words = activeState.words;
 
-  /** 三个 tab 各拉第一页：一次拿到分组数量，切换 tab 无需等待 */
-  const loadTabs = useCallback(async (mode: 'initial' | 'refresh') => {
+  /**
+   * 各 tab 拉第一页：一次拿到分组数量，切换 tab 无需等待。
+   *
+   * 请求顺序是有讲究的：learn-by-menu.json 会在服务端重建复习队列
+   * （先 DELETE 该用户全部 review、再把本次返回的卡片 INSERT 回去），
+   * 而「今日复习」的 learn.json 读的正是这张表。两者并发时，learn.json
+   * 有时读到清空前的残留、有时读到清空后重灌的新一批，条数每次都不一样。
+   * 所以拆成两段：先并发跑完所有 learn-by-menu 分组，再单独拉「今日复习」。
+   *
+   * mode: initial=首次进入 / refresh=回焦静默刷新 / manual=用户手动下拉（强制重拉）
+   */
+  const loadTabs = useCallback(async (mode: 'initial' | 'refresh' | 'manual') => {
     if (loadingRef.current) return;
+    // 回焦太频繁：整轮跳过（learn-by-menu 每次都会重建服务端复习队列）
+    if (mode === 'refresh' && Date.now() - lastLoadedAtRef.current < SILENT_REFRESH_TTL_MS) return;
 
     loadingRef.current = true;
     const gen = ++genRef.current;
@@ -411,8 +471,9 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
         failures.push(e);
       }
 
+      // 第一段：learn-by-menu 的三个分组，彼此独立可以并发
       await Promise.all(
-        BOOKMARK_TABS.map(async ({ key, types }) => {
+        BOOKMARK_TABS.filter(({ key }) => !isReviewKey(key)).map(async ({ key, types }) => {
           const reqId = ++reqIdRef.current[key];
           try {
             const page = await fetchBookmarkedWords({
@@ -428,6 +489,7 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
                 total: page.total,
                 hasMore: page.hasMore,
                 loadingMore: false,
+                nextStart: page.nextStart,
               },
             }));
           } catch (e) {
@@ -436,6 +498,34 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
           }
         })
       );
+
+      // 第二段：等队列重建都落地后，再单独取「今日复习」
+      const reviewFresh = Date.now() - reviewLoadedAtRef.current < REVIEW_REFRESH_TTL_MS;
+      const hasReviewData = tabsRef.current.review.words.length > 0;
+      // 只有首次加载和用户手动下拉才真正请求；静默刷新在有效期内沿用本地数据，
+      // 否则每进一次页面都会让服务端重灌一次复习队列，今日复习的内容一直变。
+      if (mode === 'manual' || !hasReviewData || !reviewFresh) {
+        const reqId = ++reqIdRef.current.review;
+        try {
+          const page = await fetchNotebookStudyWords({ start: 0, limit: NOTEBOOK_STUDY_LIMIT });
+          if (gen !== genRef.current || reqId !== reqIdRef.current.review) return;
+          reviewLoadedAtRef.current = Date.now();
+          setTabs((prev) => ({
+            ...prev,
+            review: {
+              words: page.words,
+              // learn.json 不返回总数，以本页已加载数量作为「今日复习」的数量
+              total: page.words.length,
+              hasMore: page.hasMore,
+              loadingMore: false,
+              nextStart: page.nextStart,
+            },
+          }));
+        } catch (e) {
+          if (gen !== genRef.current || reqId !== reqIdRef.current.review) return;
+          failures.push(e);
+        }
+      }
 
       if (gen !== genRef.current) return;
 
@@ -453,6 +543,7 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
       }
     } finally {
       loadingRef.current = false;
+      lastLoadedAtRef.current = Date.now();
       if (gen === genRef.current) {
         setInitialLoading(false);
         setRefreshing(false);
@@ -469,23 +560,34 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     setTabs((prev) => ({ ...prev, [key]: { ...prev[key], loadingMore: true } }));
 
     try {
-      const page = await fetchBookmarkedWords({
-        start: cur.words.length,
-        limit: BOOKMARK_PAGE_SIZE,
-        types: TAB_TYPES[key],
-      });
+      // 翻页 offset 用 nextStart（服务端消费掉的卡片数），不是本地 words.length：
+      // 服务端会过滤掉词库里查不到的单词，用本地条数当 offset 会错位。
+      const start = cur.nextStart || 0;
+      const page = isReviewKey(key)
+        ? await fetchNotebookStudyWords({
+            start,
+            limit: NOTEBOOK_STUDY_LIMIT,
+          })
+        : await fetchBookmarkedWords({
+            start,
+            limit: BOOKMARK_PAGE_SIZE,
+            types: TAB_TYPES[key],
+          });
       if (reqId !== reqIdRef.current[key]) return;
       setTabs((prev) => {
         const t = prev[key];
         const seen = new Set(t.words.map((w) => w.id));
         const added = page.words.filter((w) => !seen.has(w.id));
+        const nextWords = [...t.words, ...added];
         return {
           ...prev,
           [key]: {
-            words: [...t.words, ...added],
-            total: page.total,
+            words: nextWords,
+            // learn.json 没有 total，以已加载数量为准
+            total: 'total' in page ? Number(page.total) || nextWords.length : nextWords.length,
             hasMore: page.hasMore,
             loadingMore: false,
+            nextStart: page.nextStart,
           },
         };
       });
@@ -514,7 +616,8 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
     }, [loadTabs])
   );
 
-  const handleRefresh = useCallback(() => loadTabs('refresh'), [loadTabs]);
+  // 用户手动下拉：真的重新拉一次（包括「今日复习」）
+  const handleRefresh = useCallback(() => loadTabs('manual'), [loadTabs]);
 
   /** 会员限制的升级弹窗：一律走 ConfirmDialog */
   const showVipDialog = useCallback(
@@ -577,6 +680,11 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
         total: tabs[activeTab].total,
         // 复习页继续翻页时要沿用同一个筛选条件，否则会从「全部」里接着取
         types: TAB_TYPES[activeTab],
+        // 当前 tab 已消费掉的 offset，复习页接着往下取，避免重复拉同一批
+        nextStart: tabs[activeTab].nextStart || list.length,
+        // 今日复习的续页同样走 learn.json，传标记让复习页换接口，
+        // 否则会退化成按 type 过滤的 learn-by-menu.json
+        source: isReviewKey(activeTab) ? 'review' : undefined,
       });
     },
     [navigation, tabs, activeTab]
@@ -598,7 +706,8 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
       const next = { ...prev };
       for (const { key } of BOOKMARK_TABS) {
         const t = prev[key];
-        if (key === 'learning') {
+        // 学习中与今日复习都是「未记住」的集合，标记记住后直接移出列表
+        if (key === 'learning' || isReviewKey(key)) {
           const removed = t.words.filter((w) => ids.has(w.id)).length;
           next[key] = {
             ...t,
@@ -772,6 +881,14 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
 
   /** 当前 tab 的空态文案 */
   const emptyState = useMemo(() => {
+    if (isReviewKey(activeTab)) {
+      return {
+        icon: 'alarm-outline',
+        color: Colors.primary,
+        title: '今天没有要复习的单词',
+        text: '学过的单词到期后会出现在这里，也可以去「学习中」继续背词',
+      };
+    }
     if (activeTab === 'mastered') {
       return {
         icon: 'checkmark-done-outline',
@@ -971,7 +1088,9 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   segment: {
-    paddingHorizontal: 12,
+    // 四个 tab（今日复习/学习中/已记住/全部）比原来的三个更宽，
+    // 收紧左右内边距与字号，保证小屏（375pt）也能一行放下
+    paddingHorizontal: 8,
     paddingVertical: 5,
     borderRadius: 12,
   },
@@ -984,7 +1103,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   segmentText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: Colors.textTertiary,
   },

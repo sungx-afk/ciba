@@ -57,6 +57,25 @@ export interface BookmarkedWordPage {
   words: Word[];
   total: number;
   hasMore: boolean;
+  /**
+   * 服务端本次实际取到的卡片数（**词库过滤之前**）。
+   * 两个列表接口都是「先 SQL 分页，再过滤掉词库里查不到的单词」，
+   * 所以 words.length 会小于服务端消费掉的 offset，翻页必须按 rawCount 累加，
+   * 否则下一次请求会错位（重复卡片 / 漏词）。
+   */
+  rawCount: number;
+  /** 下一页应该传的 start（= start + rawCount） */
+  nextStart: number;
+}
+
+export interface NotebookStudyPage {
+  words: Word[];
+  packId: number;
+  hasMore: boolean;
+  /** 同 BookmarkedWordPage.rawCount：learn.json 也会过滤单词，offset 按它累加 */
+  rawCount: number;
+  /** 下一页应该传的 start（= start + rawCount） */
+  nextStart: number;
 }
 
 let cachedPackId = 0;
@@ -164,9 +183,11 @@ export async function fetchBookmarkedWords(
 
   const cards: any[] = Array.isArray(rsp?.cards) ? rsp.cards : [];
   const words = cards.map(cardToWord).filter((w) => w.word && w.id);
-  const total = Number(rsp?.total) || start + words.length;
+  // 服务端先 SQL 分页、再过滤词库里查不到的单词，offset 要按过滤前的数量累加
+  const rawCount = cards.length;
+  const total = Number(rsp?.total) || start + rawCount;
 
-  return { words, total, hasMore: start + words.length < total };
+  return { words, total, hasMore: start + rawCount < total, rawCount, nextStart: start + rawCount };
 }
 
 /** 已缓存的生词本卡组 id（学习结果上报要用），未取过时为 0 */
@@ -229,13 +250,25 @@ export async function fetchNotebookStats(force = false): Promise<NotebookStats> 
 }
 
 /**
- * 首页「开始背词」的生词队列:
- * GET /anki/pack/{packId}/learn.json?start=0&limit=50&sorters=[{"direction":"desc","column":"id"}]
- * 由服务端按到期时间给出今日待学卡片，取回后直接进生词本复习页。
+ * 生词本「今日复习」队列（也是首页「开始背词」用的同一接口）:
+ * GET /anki/pack/{packId}/learn.json?start=0&limit=50
+ * 由服务端按到期时间给出今日待复习卡片，取回后直接进生词本复习页。
+ *
+ * 两个服务端事实（改调用方式前务必知道）：
+ *  1. learn.json 读的是 tbl_anki_review（复习队列表），而 learn-by-menu.json 每次调用都会
+ *     先 DELETE 掉该用户全部 review、再把本次返回的卡片 INSERT 回去。
+ *     也就是说：**只要 concurrent/先后调了 learn-by-menu，今日复习的队列就被换掉了**，
+ *     这就是「浏览器打 learn.json 每次都一样、App 里每次都不一样」的原因。
+ *     因此调用方必须让两者串行，并且尽量少触发 learn-by-menu。
+ *  2. 该接口只返回 cards、**没有 total**，且会过滤掉词库里查不到的单词；
+ *     「是否还有更多」只能按服务端取到的卡片数（过滤前）是否取满来推断。
+ *
+ * 另外：sorters 参数在 learn.json 上是无效的（服务端没读它，实际固定 order by due, id），
+ * 这里仍然按 web 端习惯传，仅为与 learn-by-menu 保持一致。
  */
 export async function fetchNotebookStudyWords(
   options: { start?: number; limit?: number } = {}
-): Promise<{ words: Word[]; packId: number }> {
+): Promise<NotebookStudyPage> {
   const { start = 0, limit = NOTEBOOK_STUDY_LIMIT } = options;
   const packId = await fetchDefaultMoviePackId();
 
@@ -247,7 +280,15 @@ export async function fetchNotebookStudyWords(
 
   const cards: any[] = Array.isArray(rsp?.cards) ? rsp.cards : [];
   const words = cards.map(cardToWord).filter((w) => w.word && w.id);
-  return { words, packId };
+  // 同上：offset 要按过滤前的卡片数累加，hasMore 也按过滤前是否取满来判断
+  const rawCount = cards.length;
+  return {
+    words,
+    packId,
+    hasMore: rawCount >= limit,
+    rawCount,
+    nextStart: start + rawCount,
+  };
 }
 
 /**

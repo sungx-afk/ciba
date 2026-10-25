@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -51,6 +51,11 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
   const [pendingPack, setPendingPack] = useState<RemotePack | null>(null);
   /** 统一弹窗状态：确认/提示一律走 ConfirmDialog，不再使用系统 Alert */
   const [dialog, setDialog] = useState<DialogPayload | null>(null);
+  /**
+   * 默认选中只做一次：新用户进来时自动选中第一个词库，
+   * 之后用户手动取消选择、下拉刷新时不再强行帮他选回去。
+   */
+  const defaultSelectedRef = useRef(false);
 
   const loadMarket = useCallback(async () => {
     setLoading(true);
@@ -66,12 +71,22 @@ export const MarketScreen: React.FC<MarketScreenProps> = ({ route, navigation })
         if (p.source_id) ids.add(Number(p.source_id));
       }
       setInstalledIds(ids);
+
+      // 新用户（我的卡组为空，firstSetup）进来时默认聚焦第一个「还没添加」的词库，
+      // 让底部「确定」立即可点，省掉一次手动选卡的操作。
+      if (firstSetup && !defaultSelectedRef.current) {
+        const first = market.packs.find((p) => !ids.has(p.id));
+        if (first) {
+          defaultSelectedRef.current = true;
+          setSelectedPackId((prev) => prev ?? first.id);
+        }
+      }
     } catch (e: any) {
       setErrorMsg(e?.message || '加载卡组市场失败');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [firstSetup]);
 
   useEffect(() => {
     loadMarket();

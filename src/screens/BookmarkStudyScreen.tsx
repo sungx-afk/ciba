@@ -26,7 +26,9 @@ import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
 import { ActionSheet } from '../components/ActionSheet';
 import {
   fetchBookmarkedWords,
+  fetchNotebookStudyWords,
   BOOKMARK_PAGE_SIZE,
+  NOTEBOOK_STUDY_LIMIT,
   reportBookmarkReview,
   BOOKMARK_REVIEW_TYPE,
   BookmarkGrade,
@@ -149,6 +151,11 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   const initialTypes: number[] | undefined = Array.isArray(params.types)
     ? (params.types as number[])
     : undefined;
+  /**
+   * 从「今日复习」tab 进入的会话：续页同样走 learn.json（按到期时间取），
+   * 否则会退化成按 type 过滤的 learn-by-menu.json，混进不属于今日复习的卡片。
+   */
+  const isReviewSourceRef = useRef(params.source === 'review');
   const startIndex: number = Math.max(
     0,
     Math.min(Number(params.startIndex) || 0, Math.max(0, initialWords.length - 1))
@@ -159,9 +166,13 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
     initialWords.length ? initialWords.slice(startIndex) : []
   );
   const [total, setTotal] = useState(Math.max(initialTotal, initialWords.length));
-  const [hasMore, setHasMore] = useState(
-    initialWords.length === 0 || initialWords.length < Math.max(initialTotal, initialWords.length)
-  );
+  const [hasMore, setHasMore] = useState(() => {
+    // 今日复习：learn.json 不返回 total，首屏取满一页就当还有更多
+    if (isReviewSourceRef.current) return initialWords.length >= NOTEBOOK_STUDY_LIMIT;
+    return (
+      initialWords.length === 0 || initialWords.length < Math.max(initialTotal, initialWords.length)
+    );
+  });
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
   const [grading, setGrading] = useState(false);
@@ -214,7 +225,12 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
   const hasMoreRef = useRef(hasMore);
   const loadFailedRef = useRef(false);
   /** 下一次要从服务端拉取的偏移量（当前已加载的条数） */
-  const nextStartRef = useRef(initialWords.length);
+  /**
+   * 下一页的 start。列表页翻过页时会把服务端消费掉的 offset 一起传过来，
+   * 没有就用本地条数兜底（服务端过滤过单词，这个值偏小，可能重复取到几张，
+   * loadMore 里的 mergeWords 会去重）。
+   */
+  const nextStartRef = useRef(Number(params.nextStart) || initialWords.length);
 
   /** 取下一页生词；返回是否真的往队列里追加了新卡片 */
   const loadMore = useCallback(async (): Promise<boolean> => {
@@ -232,11 +248,14 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
       // 顺延 start 再取，避免「明明还有更多却提前结束会话」
       for (let attempt = 0; attempt < 3 && !added; attempt += 1) {
         const start = nextStartRef.current;
-        const page = await fetchBookmarkedWords({
-          start,
-          limit: BOOKMARK_PAGE_SIZE,
-          types: initialTypes,
-        });
+        // 今日复习续页走 learn.json；其它分组按 tab 的 type 过滤续页
+        const page = isReviewSourceRef.current
+          ? await fetchNotebookStudyWords({ start, limit: NOTEBOOK_STUDY_LIMIT })
+          : await fetchBookmarkedWords({
+              start,
+              limit: BOOKMARK_PAGE_SIZE,
+              types: initialTypes,
+            });
 
         const before = queueRef.current;
         const merged = mergeWords(before, page.words);
@@ -244,10 +263,14 @@ export const BookmarkStudyScreen: React.FC<BookmarkStudyScreenProps> = ({ route,
 
         queueRef.current = merged;
         setQueue(merged);
-        setTotal(page.total);
-        nextStartRef.current = start + page.words.length;
+        // learn.json 没有 total：以已加载数量作为本次会话的总数
+        setTotal('total' in page ? Number(page.total) || merged.length : merged.length);
+        // 服务端会过滤掉词库里查不到的单词，offset 必须按过滤前的卡片数累加，
+        // 否则下一页会重复取到同一批（表现为翻页时几乎没有新词）。
+        nextStartRef.current = page.nextStart;
 
-        if (page.words.length === 0) {
+        // 用过滤前的数量判断本页是否真的取到了东西
+        if (page.rawCount === 0) {
           hasMoreRef.current = false;
           setHasMore(false);
           break;

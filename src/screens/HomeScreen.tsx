@@ -37,6 +37,13 @@ import { ProgressBar } from '../components/ProgressBar';
 const SUB_PAGE_SIZE = 30;
 /** 生词本「复习待办」一次拉取的数量 */
 const NOTEBOOK_REVIEW_LIMIT = 50;
+/**
+ * 首页「今日学习-生词本」看板的显示开关。
+ *
+ * 该模块暂时下线：相关渲染、状态、数据加载全部原样保留，
+ * 需要恢复时把这里改成 true 即可，无需改动其它代码。
+ */
+const SHOW_NOTEBOOK_DASHBOARD: boolean = false;
 /** 分类卡组默认展示的记住状态: 0 未记住 + 1 进行中 */
 const LEARNING_REMEMBER_TYPES = [0, 1];
 /** 「已记住」tab: remember_type = 2（已记住数量 = 词数） */
@@ -751,6 +758,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
    * 学习 = conf.day_limit、已学习 = today_learned_card_count、总数量 = card_count。
    */
   const loadNotebook = useCallback(async () => {
+    // 看板下线期间不再发请求；恢复后自动生效
+    if (!SHOW_NOTEBOOK_DASHBOARD) return;
     const req = ++notebookReqRef.current;
     setLoadingNotebook(true);
     try {
@@ -768,6 +777,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
   /** 生词本复习待办：学过但还没记住的单词（type = 1/2/3），数量与队列都用它 */
   const loadNotebookReview = useCallback(async () => {
+    // 看板下线期间不再发请求；恢复后自动生效
+    if (!SHOW_NOTEBOOK_DASHBOARD) return;
     const req = ++notebookReviewReqRef.current;
     setLoadingNotebookReview(true);
     try {
@@ -1393,11 +1404,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
         refreshControl={
           <RefreshControl refreshing={loadingPacks} onRefresh={reloadAll} colors={[Colors.primary]} />
         }
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          // 看板隐藏后，补回它原本提供的顶部间距
+          !SHOW_NOTEBOOK_DASHBOARD && styles.listContentNoDashboard,
+        ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* 今日学习看板 */}
-        {renderDashboardCard()}
+        {/* 今日学习看板：暂时下线，恢复时把 SHOW_NOTEBOOK_DASHBOARD 改成 true */}
+        {SHOW_NOTEBOOK_DASHBOARD ? renderDashboardCard() : null}
 
         {/* 分类卡组：标题 + 整体进度 + tab + 列表，统一包成一张卡片 */}
         {renderPacksCard()}
@@ -1425,6 +1440,10 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingBottom: 40,
+  },
+  /** 今日学习看板隐藏时的顶部间距，代替卡片自身的 marginTop */
+  listContentNoDashboard: {
+    paddingTop: 16,
   },
   // 顶部标题栏：主色浅底 + 底部圆角，与下方看板形成层次
   header: {
