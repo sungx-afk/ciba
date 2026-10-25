@@ -23,6 +23,7 @@ import { Word } from '../types';
 import { Header } from '../components/Header';
 import { RichText } from '../components/RichText';
 import { ConfirmDialog, DialogPayload } from '../components/ConfirmDialog';
+import { ActionSheet, ActionSheetItem } from '../components/ActionSheet';
 import { pronounceWord } from '../utils/speech';
 import { showToast } from '../utils/toast';
 import { playRememberedSound } from '../utils/effectSound';
@@ -72,6 +73,20 @@ const BOOKMARK_TABS: TabMeta[] = [
   { key: 'mastered', label: '已记住', types: BOOKMARK_MASTERED_TYPES },
   { key: 'all', label: '全部', types: undefined },
 ];
+
+/**
+ * 顶部常驻的两个分组（今日复习 / 学习中）。
+ * 「已记住」与「全部」使用频率低，合并进右侧的下拉选择框，避免四个胶囊挤在一行。
+ * 注意：数据仍按 BOOKMARK_TABS 全量拉取，下拉只是切换展示，不额外发请求。
+ */
+const PRIMARY_TABS: TabMeta[] = BOOKMARK_TABS.filter(
+  (t) => t.key === 'review' || t.key === 'learning'
+);
+/** 下拉框里的两个分组 */
+const MORE_TABS: TabMeta[] = BOOKMARK_TABS.filter(
+  (t) => t.key === 'mastered' || t.key === 'all'
+);
+const isMoreKey = (key: TabKey) => key === 'mastered' || key === 'all';
 
 const TAB_TYPES: Record<TabKey, number[] | undefined> = {
   review: undefined,
@@ -400,8 +415,10 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
   // 会员状态与注册时间都来自用户信息
   const { user, refreshUserInfo } = useAuth();
 
-  /** 当前分组 */
-  const [activeTab, setActiveTab] = useState<TabKey>('learning');
+  /** 当前分组：默认聚焦「今日复习」 */
+  const [activeTab, setActiveTab] = useState<TabKey>('review');
+  /** 「已记住 / 全部」合并后的下拉选择框是否展开 */
+  const [moreSheet, setMoreSheet] = useState(false);
   /** 三个 tab 各自的分页数据 */
   const [tabs, setTabs] = useState<Record<TabKey, TabState>>(emptyTabs);
   /** 生词本卡组 id：学习结果要按它上报 */
@@ -879,6 +896,10 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
   const rememberedCount = tabs.mastered.total;
   const showEmptyState = !initialLoading && !errorMsg && !needLogin && totalCount === 0;
 
+  /** 下拉框当前展示的分组：未选中「已记住/全部」时默认显示第一项 */
+  const moreTab = MORE_TABS.find((t) => t.key === activeTab) || MORE_TABS[0];
+  const moreActive = isMoreKey(activeTab);
+
   /** 当前 tab 的空态文案 */
   const emptyState = useMemo(() => {
     if (isReviewKey(activeTab)) {
@@ -931,7 +952,7 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
       {/* 顶部操作条：左侧为分组 tab，右侧显示/隐藏词义 */}
       <View style={styles.topBar}>
         <View style={styles.segmentWrap}>
-          {BOOKMARK_TABS.map((t) => {
+          {PRIMARY_TABS.map((t) => {
             const active = t.key === activeTab;
             const count = tabs[t.key].total;
             return (
@@ -948,6 +969,23 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
               </TouchableOpacity>
             );
           })}
+
+          {/* 「已记住 / 全部」合并成一个下拉选择框 */}
+          <TouchableOpacity
+            style={[styles.segment, styles.segmentMore, moreActive && styles.segmentActive]}
+            onPress={() => setMoreSheet(true)}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.segmentText, moreActive && styles.segmentTextActive]}>
+              {moreTab.label}
+              {tabs[moreTab.key].total ? ` ${tabs[moreTab.key].total}` : ''}
+            </Text>
+            <Ionicons
+              name="chevron-down"
+              size={11}
+              color={moreActive ? Colors.primary : Colors.textTertiary}
+            />
+          </TouchableOpacity>
         </View>
 
         <View style={styles.topActions}>
@@ -1062,6 +1100,22 @@ export const BookmarksScreen: React.FC<BookmarksScreenProps> = ({ navigation }) 
         onCancel={dialog?.onCancel}
         onClose={() => setDialog(null)}
       />
+
+      {/* 「已记住 / 全部」下拉：选中项前面打勾，附带各自数量 */}
+      <ActionSheet
+        visible={moreSheet}
+        items={MORE_TABS.map<ActionSheetItem>((t) => ({
+          key: t.key,
+          name: `${t.key === activeTab ? '✓ ' : ''}${t.label}${
+            tabs[t.key].total ? `（${tabs[t.key].total}）` : ''
+          }`,
+        }))}
+        onSelect={(key) => {
+          setMoreSheet(false);
+          setActiveTab(key as TabKey);
+        }}
+        onClose={() => setMoreSheet(false)}
+      />
     </SafeAreaView>
   );
 };
@@ -1088,11 +1142,16 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   segment: {
-    // 四个 tab（今日复习/学习中/已记住/全部）比原来的三个更宽，
-    // 收紧左右内边距与字号，保证小屏（375pt）也能一行放下
-    paddingHorizontal: 8,
-    paddingVertical: 5,
+    // 已记住 / 全部 收进下拉框后，一行只剩三个胶囊，内边距可以放宽
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 12,
+  },
+  /** 下拉选择框：文字 + 小箭头 */
+  segmentMore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
   },
   segmentActive: {
     backgroundColor: Colors.card,
