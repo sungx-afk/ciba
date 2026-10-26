@@ -48,8 +48,7 @@
             ]
           }
         ]
-      },
-      "buildNumber": "6"
+      }
     },
     "android": {
       "package": "com.cibaenglish.app",
