@@ -1344,13 +1344,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
   /** 卡组列表为空时的占位（加载态由卡片外层统一处理） */
   const renderEmpty = () => {
-    // 未登录: 登录入口已放在「今日学习」卡片，这里只做无按钮的占位提示
+    // 未登录: 占位提示 + 登录按钮（用户看到锁时就在原地引导去登录）
     if (!isLoggedIn) {
       return (
         <View style={styles.lockedBox}>
           <Ionicons name="lock-closed-outline" size={26} color={Colors.textMuted} />
           <Text style={styles.lockedTitle}>分类卡组已锁定</Text>
-          <Text style={styles.lockedDesc}>在上方「今日学习」中登录后即可查看</Text>
+          <Text style={styles.lockedDesc}>登录后即可查看并同步你的卡组</Text>
+          <TouchableOpacity
+            style={styles.lockedLoginBtn}
+            onPress={() => navigation.navigate('Login')}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="log-in-outline" size={15} color="#FFFFFF" />
+            <Text style={styles.lockedLoginBtnText}>立即登录</Text>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -1964,7 +1972,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
 
-  // 未登录时的分类卡组占位（无按钮，避免与上方登录入口重复）
+  // 未登录时的分类卡组占位（提示 + 就地登录入口）
   lockedBox: {
     marginTop: 12,
     paddingVertical: 22,
@@ -1985,6 +1993,28 @@ const styles = StyleSheet.create({
   lockedDesc: {
     fontSize: 12,
     color: Colors.textMuted,
+  },
+  /** 锁定占位里的登录按钮：胶囊形，比主导航按钮轻一些 */
+  lockedLoginBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    marginTop: 2,
+    paddingHorizontal: 22,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: Colors.primary,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  lockedLoginBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
 
   // 空态 / 加载
